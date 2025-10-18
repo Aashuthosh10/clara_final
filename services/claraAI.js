@@ -292,8 +292,16 @@ class ClaraAI {
                           lowerMessage.includes('give a call');
     
     // Determine intent - More intelligent intent detection
+    // PRIORITY 1: Check for greetings FIRST (before anything else)
     let intent = 'general_query';
-    if (isStaffRelated) {
+    if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('good morning') || 
+        lowerMessage.includes('good afternoon') || lowerMessage.includes('good evening') ||
+        lowerMessage.includes('namaste') || lowerMessage.includes('namaskar') || lowerMessage.includes('namaskaram') ||
+        lowerMessage.includes('kaise ho') || lowerMessage.includes('kaise hai') || lowerMessage.includes('aap kaise') ||
+        lowerMessage.includes('nimage hegiddira') || lowerMessage.includes('eppadi irukkinga') || 
+        lowerMessage.includes('ela unnaru') || lowerMessage.includes('evide bulaganam') || lowerMessage.includes('kashe ahat')) {
+      intent = 'greeting';
+    } else if (isStaffRelated) {
       // If staff name is mentioned, prioritize call intent unless it's clearly just an info query
       if (staffNames.length > 0) {
         // Check if it's clearly just an information query
@@ -329,13 +337,18 @@ class ClaraAI {
       if (lowerMessage.includes('what is') || lowerMessage.includes('how to') || lowerMessage.includes('explain') || 
           lowerMessage.includes('define') || lowerMessage.includes('tell me about') || lowerMessage.includes('why')) {
         intent = 'general_knowledge';
-      } else if (lowerMessage.includes('hello') || lowerMessage.includes('hi') || lowerMessage.includes('good morning') || 
-                 lowerMessage.includes('good afternoon') || lowerMessage.includes('good evening')) {
-        intent = 'greeting';
       } else {
         intent = 'general_query';
       }
     }
+
+    console.log('🔍 Final analysis result:', {
+      originalMessage: message,
+      lowerMessage: lowerMessage,
+      staffNames: staffNames.map(s => s.name),
+      intent: intent,
+      isStaffRelated: isStaffRelated
+    });
 
     return {
       originalMessage: message,
@@ -352,9 +365,60 @@ class ClaraAI {
    */
   async extractStaffNames(message) {
     try {
+      // Skip staff detection for common non-staff words that might cause false positives
+      const commonNonStaffWords = [
+        'kannada', 'hindi', 'telugu', 'tamil', 'malayalam', 'marathi',
+        'namaskara', 'namaste', 'hello', 'hi', 'good morning', 'good evening',
+        'language', 'speak', 'talk', 'chat', 'conversation', 'help', 'assist',
+        'bharata', 'india', 'indian', 'culture', 'tradition', 'english',
+        'spanish', 'french', 'german', 'chinese', 'japanese', 'korean',
+        'arabic', 'portuguese', 'russian', 'italian', 'dutch', 'swedish',
+        'norwegian', 'danish', 'finnish', 'polish', 'czech', 'hungarian',
+        'romanian', 'bulgarian', 'croatian', 'serbian', 'slovak', 'slovenian',
+        'estonian', 'latvian', 'lithuanian', 'greek', 'turkish', 'hebrew',
+        'thai', 'vietnamese', 'indonesian', 'malay', 'filipino', 'tagalog',
+        'urdu', 'bengali', 'punjabi', 'gujarati', 'tamil', 'telugu', 'kannada',
+        'malayalam', 'marathi', 'oriya', 'assamese', 'kashmiri', 'sanskrit'
+      ];
+      
+      const lowerMessage = message.toLowerCase().trim();
+      for (const word of commonNonStaffWords) {
+        if (lowerMessage.includes(word)) {
+          console.log(`🚫 Skipping staff detection for common word: ${word} in message: ${lowerMessage}`);
+          return []; // Return empty array to prevent false staff detection
+        }
+      }
+      
+      // Additional check: if message is just a single word that's a language name, skip
+      const singleWordLanguages = [
+        'kannada', 'hindi', 'telugu', 'tamil', 'malayalam', 'marathi', 'bharata',
+        'english', 'spanish', 'french', 'german', 'chinese', 'japanese', 'korean',
+        'arabic', 'portuguese', 'russian', 'italian', 'dutch', 'swedish',
+        'norwegian', 'danish', 'finnish', 'polish', 'czech', 'hungarian',
+        'romanian', 'bulgarian', 'croatian', 'serbian', 'slovak', 'slovenian',
+        'estonian', 'latvian', 'lithuanian', 'greek', 'turkish', 'hebrew',
+        'thai', 'vietnamese', 'indonesian', 'malay', 'filipino', 'tagalog',
+        'urdu', 'bengali', 'punjabi', 'gujarati', 'oriya', 'assamese', 'kashmiri', 'sanskrit'
+      ];
+      if (singleWordLanguages.includes(lowerMessage)) {
+        console.log(`🚫 Skipping staff detection for single word language: ${lowerMessage}`);
+        return [];
+      }
+      
+      // Additional check: if message contains only language-related words, skip
+      const languageRelatedWords = ['language', 'speak', 'talk', 'conversation', 'chat'];
+      const messageWords = lowerMessage.split(/\s+/);
+      if (messageWords.length <= 3 && messageWords.some(word => languageRelatedWords.includes(word) || singleWordLanguages.includes(word))) {
+        console.log(`🚫 Skipping staff detection for language-related message: ${lowerMessage}`);
+        return [];
+      }
+      
       // Get all staff members from both database and profiles
       const dbStaff = await this.getAllStaff();
       const allStaff = [...dbStaff, ...staffProfiles];
+      
+      console.log(`🔍 Processing message for staff detection: "${message}"`);
+      console.log(`🔍 Lower message: "${lowerMessage}"`);
       
       const identifiedStaff = [];
       
@@ -412,11 +476,16 @@ class ClaraAI {
           continue;
         }
         
-        // Check for partial name matches (more flexible)
+        // Check for partial name matches (more precise - require word boundaries)
         for (const part of staffNameParts) {
-          if (part.length > 2 && message.includes(part)) {
-            identifiedStaff.push(staff);
-            break;
+          if (part.length > 3) { // Increased minimum length to 4 characters
+            // Use word boundary regex to prevent false matches
+            const wordBoundaryRegex = new RegExp(`\\b${part}\\b`, 'i');
+            if (wordBoundaryRegex.test(message)) {
+              console.log(`🎯 Staff match found: "${part}" in message "${message}" for staff "${staff.name}"`);
+              identifiedStaff.push(staff);
+              break;
+            }
           }
         }
         
@@ -535,15 +604,33 @@ class ClaraAI {
         return `I am going to start a video call with ${staff.name}. Please hold while I ring them.`;
       }
       
+      // Detect the language of the user's input
+      const detectedLanguage = this.detectInputLanguage(message);
+      console.log('🌐 Detected input language:', detectedLanguage);
+      
       // Build context for Gemini AI
       const context = this.buildGeminiContext(analysis, staffData);
       
-      // Simplified prompt for Clara to reduce token usage
-      let enhancedPrompt = `You are Clara, a friendly AI receptionist at Sai Vidya Institute of Technology. Answer this question naturally and helpfully: "${message}"
+      // Check if this is a greeting and use fallback response instead of Gemini
+      if (analysis.intent === 'greeting') {
+        console.log('🎯 Detected greeting intent - using fallback response');
+        return this.generateFallbackResponse(analysis, staffData, detectedLanguage);
+      }
+
+      // Enhanced prompt with language mirroring instruction and context awareness
+      let enhancedPrompt = `You are Clara, a friendly AI receptionist at Sai Vidya Institute of Technology. You are having a natural conversation with a visitor.
+
+CRITICAL INSTRUCTIONS:
+1. LANGUAGE: The user wrote their message in ${detectedLanguage}. You MUST respond in the EXACT SAME LANGUAGE as the user's input.
+2. CONTEXT AWARENESS: This is a conversation. Respond naturally to greetings, questions, and requests.
+3. GREETINGS: If someone greets you, greet them back warmly in their language.
+4. NATURAL FLOW: Don't show program details unless specifically asked about them.
+
+User's message: "${message}"
 
 ${context}
 
-Respond as Clara would - warmly and professionally. Don't mention being an AI model.`;
+Respond as Clara would - naturally, warmly, and professionally in the same language as the user's input. If it's a greeting, respond with a greeting. If it's a question, answer appropriately. Don't mention being an AI model.`;
 
       // Get response from Gemini AI
       const response = await queryGemini(enhancedPrompt, []);
@@ -553,8 +640,177 @@ Respond as Clara would - warmly and professionally. Don't mention being an AI mo
       console.error('Error generating response with Gemini:', error);
       
       // Fallback response
-      return this.generateFallbackResponse(analysis, staffData);
+      return this.generateFallbackResponse(analysis, staffData, detectedLanguage);
     }
+  }
+
+  /**
+   * Detect the primary language of user input with comprehensive support for Indian languages
+   */
+  detectInputLanguage(text) {
+    const lowerText = text.toLowerCase().trim();
+    
+    // Priority 1: Kannada (highest accuracy priority)
+    if (/[\u0C80-\u0CFF]/i.test(text)) {
+      return 'Kannada (Kannada script)';
+    }
+    
+    // Kannada written in Roman script - Enhanced keywords
+    const kannadaRomanKeywords = [
+      'kannada', 'kannadadalli', 'kannadigaru', 'matadu', 'helu', 'kelu', 'bantu', 'banni',
+      'namaskara', 'namaskaragalu', 'dhanyavadagalu', 'kripaya', 'dayavittu', 'yelli',
+      'yenu', 'yake', 'yavaga', 'hege', 'aadre', 'aadru', 'illa', 'iddare', 'baruthe',
+      'hoguthe', 'kodu', 'thago', 'bittu', 'kali', 'sari', 'thappu', 'olleya', 'ketta',
+      'chikka', 'dodda', 'hosa', 'haleya', 'nava', 'purana', 'nalla', 'sakala', 'belaku',
+      'kattale', 'neeru', 'anna', 'akka', 'amma', 'appa', 'ajja', 'ajji', 'magalu', 'maga',
+      'sose', 'sontha', 'sahodara', 'sahodari', 'mava', 'mavane', 'mavalu', 'mavale',
+      'nimage', 'hegiddira', 'hegidira', 'yenu', 'yake', 'yavaga', 'hege', 'aadre',
+      'namaskara', 'dhanyavadagalu', 'kripaya', 'dayavittu', 'yelli', 'yenu', 'yake'
+    ];
+    
+    const kannadaRomanCount = kannadaRomanKeywords.filter(keyword => 
+      lowerText.includes(keyword)
+    ).length;
+    
+    if (kannadaRomanCount >= 1) { // Reduced threshold for better detection
+      return 'Kannada (Roman script)';
+    }
+    
+    // Priority 2: Hindi (highest accuracy priority)
+    if (/[अ-ह]/i.test(text)) {
+      return 'Hindi (Devanagari script)';
+    }
+    
+    // Hindi written in Roman script (Hinglish) - Enhanced keywords
+    const hindiRomanKeywords = [
+      'kya', 'hai', 'hain', 'ho', 'hun', 'main', 'tum', 'aap', 'hum', 'kaise', 'kahan', 'kab', 'kyun',
+      'achha', 'theek', 'bilkul', 'zaroor', 'shukriya', 'dhanyawad', 'namaste', 'namaskar',
+      'baat', 'karo', 'bolo', 'sunao', 'batao', 'batayiye', 'samjhao', 'samjhaao',
+      'madad', 'help', 'sahayta', 'chahiye', 'karna', 'karne', 'kar', 'karo',
+      'time', 'samay', 'din', 'raat', 'subah', 'shaam', 'aaj', 'kal', 'parso',
+      'institute', 'college', 'vidyalaya', 'mahavidyalaya', 'university', 'vishwavidyalaya',
+      'professor', 'prof', 'sir', 'madam', 'maam', 'mam', 'teacher', 'guru', 'adhyapak',
+      'aap', 'kaise', 'ho', 'hain', 'kya', 'hai', 'main', 'tum', 'hum', 'kahan', 'kab',
+      'namaste', 'dhanyawad', 'shukriya', 'achha', 'theek', 'bilkul', 'zaroor',
+      'aap kaise ho', 'aap kaise hai', 'tum kaise ho', 'tum kaise hai', 'main theek hun',
+      'aap theek ho', 'tum theek ho', 'kaise chal raha hai', 'kaise chal rahi hai'
+    ];
+    
+    const hindiRomanCount = hindiRomanKeywords.filter(keyword => 
+      lowerText.includes(keyword)
+    ).length;
+    
+    if (hindiRomanCount >= 1) { // Reduced threshold for better detection
+      return 'Hindi (Roman script/Hinglish)';
+    }
+    
+    // Telugu
+    if (/[\u0C00-\u0C7F]/i.test(text)) {
+      return 'Telugu (Telugu script)';
+    }
+    
+    const teluguRomanKeywords = [
+      'telugu', 'telugulo', 'teluguvadini', 'teluguvadu', 'matladu', 'chelpu', 'vinnu', 'chudu',
+      'namaskaram', 'dhanyavadalu', 'kripya', 'yela', 'enduku', 'eppudu', 'ela', 'kani',
+      'ledu', 'unnaru', 'vastunnaru', 'pothunnaru', 'ivvu', 'theesuko', 'vaddu', 'sare',
+      'tappu', 'manchi', 'chedda', 'chinna', 'pedda', 'kotha', 'paina', 'nava', 'purana',
+      'nalla', 'velugu', 'neellu', 'anna', 'akka', 'amma', 'nanna', 'thatha', 'amma',
+      'kuthuru', 'koduku', 'sose', 'sodara', 'sodari', 'mavayya', 'mavayya', 'mavayya',
+      'yela', 'enduku', 'eppudu', 'ela', 'kani', 'ledu', 'unnaru', 'vastunnaru'
+    ];
+    
+    const teluguRomanCount = teluguRomanKeywords.filter(keyword => 
+      lowerText.includes(keyword)
+    ).length;
+    
+    if (teluguRomanCount >= 1) { // Reduced threshold for better detection
+      return 'Telugu (Roman script)';
+    }
+    
+    // Tamil
+    if (/[\u0B80-\u0BFF]/i.test(text)) {
+      return 'Tamil (Tamil script)';
+    }
+    
+    const tamilRomanKeywords = [
+      'tamil', 'tamilil', 'tamizh', 'pesu', 'kelu', 'paaru', 'tharu', 'vidu',
+      'vanakkam', 'nandri', 'tayavu', 'enga', 'enna', 'eppadi', 'eppo', 'aana',
+      'illai', 'irukku', 'varuthu', 'poguthu', 'kodu', 'eduthuko', 'venam', 'seri',
+      'thappa', 'nalla', 'ketta', 'chinna', 'periya', 'puthu', 'pazhaya', 'nalla',
+      'velicham', 'thanneer', 'anna', 'akka', 'amma', 'appa', 'thatha', 'paatti',
+      'penn', 'paiyan', 'sose', 'sodara', 'sodari', 'mavane', 'mavale',
+      'enga', 'enna', 'eppadi', 'eppo', 'aana', 'illai', 'irukku', 'varuthu'
+    ];
+    
+    const tamilRomanCount = tamilRomanKeywords.filter(keyword => 
+      lowerText.includes(keyword)
+    ).length;
+    
+    if (tamilRomanCount >= 1) { // Reduced threshold for better detection
+      return 'Tamil (Roman script)';
+    }
+    
+    // Malayalam
+    if (/[\u0D00-\u0D7F]/i.test(text)) {
+      return 'Malayalam (Malayalam script)';
+    }
+    
+    const malayalamRomanKeywords = [
+      'malayalam', 'malayalathil', 'malayali', 'parayu', 'kelu', 'kannu', 'tharu', 'vidu',
+      'namaskaram', 'nandi', 'dayavu', 'evide', 'entha', 'eppadi', 'eppo', 'pakshe',
+      'illa', 'undu', 'varunnu', 'pogunnu', 'kodu', 'eduthu', 'venam', 'sari',
+      'thappu', 'nalla', 'ketta', 'cheriya', 'valiya', 'puthya', 'pazhaya', 'nalla',
+      'velicham', 'vellam', 'chetta', 'chechi', 'amma', 'acha', 'muthachan', 'muthashi',
+      'pennu', 'mone', 'sose', 'sahodara', 'sahodari', 'mavan', 'maval',
+      'evide', 'entha', 'eppadi', 'eppo', 'pakshe', 'illa', 'undu', 'varunnu'
+    ];
+    
+    const malayalamRomanCount = malayalamRomanKeywords.filter(keyword => 
+      lowerText.includes(keyword)
+    ).length;
+    
+    if (malayalamRomanCount >= 1) { // Reduced threshold for better detection
+      return 'Malayalam (Roman script)';
+    }
+    
+    // Marathi
+    if (/[\u0900-\u097F]/i.test(text) && !/[अ-ह]/i.test(text.replace(/[\u0900-\u097F]/g, ''))) {
+      return 'Marathi (Devanagari script)';
+    }
+    
+    const marathiRomanKeywords = [
+      'marathi', 'marathit', 'marathi', 'bolu', 'aik', 'baghu', 'de', 'tak',
+      'namaskar', 'dhanyavad', 'krupaya', 'kuthhe', 'kay', 'kashe', 'kevha', 'pan',
+      'nahi', 'ahe', 'yet', 'jat', 'de', 'ghya', 'nako', 'barobar',
+      'chuk', 'changa', 'vai', 'lahan', 'motha', 'navin', 'juna', 'changa',
+      'prakash', 'pani', 'anna', 'tai', 'aai', 'baba', 'ajoba', 'ajji',
+      'mulgi', 'mulga', 'sose', 'bhau', 'bahini', 'mavashi', 'mavashi',
+      'kuthhe', 'kay', 'kashe', 'kevha', 'pan', 'nahi', 'ahe', 'yet'
+    ];
+    
+    const marathiRomanCount = marathiRomanKeywords.filter(keyword => 
+      lowerText.includes(keyword)
+    ).length;
+    
+    if (marathiRomanCount >= 1) { // Reduced threshold for better detection
+      return 'Marathi (Roman script)';
+    }
+    
+    // Check for other international languages
+    if (/[а-яё]/i.test(text)) return 'Russian';
+    if (/[一-龯]/.test(text)) return 'Chinese';
+    if (/[ひらがなカタカナ]/.test(text)) return 'Japanese';
+    if (/[가-힣]/.test(text)) return 'Korean';
+    if (/[ا-ي]/.test(text)) return 'Arabic';
+    if (/[α-ω]/i.test(text)) return 'Greek';
+    if (/[àáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ]/i.test(text)) return 'Spanish';
+    if (/[äöüß]/i.test(text)) return 'German';
+    if (/[àèéìíîòóù]/i.test(text)) return 'Italian';
+    if (/[àáâãçéêíóôõú]/i.test(text)) return 'Portuguese';
+    if (/[àâäéèêëïîôöùûüÿç]/i.test(text)) return 'French';
+    
+    // Default to English
+    return 'English';
   }
 
   /**
@@ -593,7 +849,48 @@ Respond as Clara would - warmly and professionally. Don't mention being an AI mo
   /**
    * Generate fallback response when Gemini AI fails
    */
-  generateFallbackResponse(analysis, staffData) {
+  generateFallbackResponse(analysis, staffData, detectedLanguage = 'English') {
+    // Generate language-appropriate responses
+    const responses = {
+      'Hindi (Roman script/Hinglish)': {
+        greeting: "नमस्ते! मैं क्लारा हूं। मैं ठीक हूं, आप कैसे हैं? आपका स्वागत है Sai Vidya Institute of Technology में!",
+        general: "मैं आपकी मदद करने के लिए यहां हूं। आप क्या जानना चाहते हैं?",
+        staff: "मैं staff members के बारे में जानकारी दे सकती हूं। किसके बारे में पूछना चाहते हैं?"
+      },
+      'Kannada (Roman script)': {
+        greeting: "ನಮಸ್ಕಾರ! ನಾನು ಕ್ಲಾರಾ, Sai Vidya Institute of Technology ದ receptionist। ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಬಹುದು?",
+        general: "ನಾನು ನಿಮಗೆ ಸಹಾಯ ಮಾಡಲು ಇಲ್ಲಿದ್ದೇನೆ। ನೀವು ಏನು ತಿಳಿಯಲು ಬಯಸುತ್ತೀರಿ?",
+        staff: "ನಾನು staff members ಬಗ್ಗೆ ಮಾಹಿತಿ ನೀಡಬಹುದು। ಯಾರ ಬಗ್ಗೆ ಕೇಳಲು ಬಯಸುತ್ತೀರಿ?"
+      },
+      'Tamil (Roman script)': {
+        greeting: "வணக்கம்! நான் கிளாரா, Sai Vidya Institute of Technology இன் receptionist। உங்களுக்கு எப்படி உதவ முடியும்?",
+        general: "நான் உங்களுக்கு உதவ இங்கே இருக்கிறேன்। நீங்கள் என்ன தெரிந்து கொள்ள விரும்புகிறீர்கள்?",
+        staff: "நான் staff members பற்றி தகவல் தர முடியும்। யாரைப் பற்றி கேட்க விரும்புகிறீர்கள்?"
+      },
+      'Telugu (Roman script)': {
+        greeting: "నమస్కారం! నేను క్లారా, Sai Vidya Institute of Technology లో receptionist। మీకు ఎలా సహాయం చేయగలను?",
+        general: "నేను మీకు సహాయం చేయడానికి ఇక్కడ ఉన్నాను। మీరు ఏమి తెలుసుకోవాలనుకుంటున్నారు?",
+        staff: "నేను staff members గురించి సమాచారం ఇవ్వగలను। ఎవరి గురించి అడగాలనుకుంటున్నారు?"
+      },
+      'Malayalam (Roman script)': {
+        greeting: "നമസ്കാരം! ഞാൻ ക്ലാറ, Sai Vidya Institute of Technology ന്റെ receptionist। നിങ്ങൾക്ക് എങ്ങനെ സഹായിക്കാം?",
+        general: "നിങ്ങൾക്ക് സഹായിക്കാൻ ഞാൻ ഇവിടെയുണ്ട്। നിങ്ങൾ എന്ത് അറിയാൻ ആഗ്രഹിക്കുന്നു?",
+        staff: "ഞാൻ staff members എന്നിവരെക്കുറിച്ച് വിവരങ്ങൾ നൽകാം। ആരെക്കുറിച്ച് ചോദിക്കാൻ ആഗ്രഹിക്കുന്നു?"
+      },
+      'Marathi (Roman script)': {
+        greeting: "नमस्कार! मी क्लारा आहे, Sai Vidya Institute of Technology ची receptionist। तुम्हाला कशी मदत करू शकते?",
+        general: "मी तुम्हाला मदत करण्यासाठी येथे आहे। तुम्ही काय जाणून घ्यायचे आहे?",
+        staff: "मी staff members बद्दल माहिती देऊ शकते। कोणाबद्दल विचारायचे आहे?"
+      },
+      'English': {
+        greeting: "Hello! I'm Clara, your receptionist at Sai Vidya Institute of Technology. How can I help you today?",
+        general: "I'm here to help you. What would you like to know?",
+        staff: "I can provide information about our staff members. Who would you like to know about?"
+      }
+    };
+
+    const languageResponses = responses[detectedLanguage] || responses['English'];
+
     if (analysis.isStaffRelated && analysis.staffNames.length > 0) {
       const staff = analysis.staffNames[0];
       const data = staffData[staff._id];
@@ -604,14 +901,14 @@ Respond as Clara would - warmly and professionally. Don't mention being an AI mo
     }
     
     if (analysis.intent === 'greeting') {
-      return "Hello! I'm Clara, your AI receptionist at Sai Vidya Institute of Technology. I'm here to help you with any questions you might have - whether about our institute, staff, or general knowledge topics. How can I assist you today?";
+      return languageResponses.greeting;
     }
     
     if (analysis.intent === 'general_knowledge') {
-      return "I'd be happy to help you with that question! I'm designed to provide accurate information on a wide range of topics. However, I'm experiencing some technical difficulties right now. Please try asking again in a moment, and I'll do my best to give you a comprehensive answer.";
+      return languageResponses.general;
     }
     
-    return "I'm here to help you with information about our staff members, their schedules, arranging meetings, and answering general knowledge questions. How can I assist you today?";
+    return languageResponses.general;
   }
 
   /**

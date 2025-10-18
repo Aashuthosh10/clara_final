@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS Test</title>
+</head>
+<body>
+    <h1>TTS Test Page</h1>
+    <button onclick="testEnglish()">Test English</button>
+    <button onclick="testHindi()">Test Hindi</button>
+    <div id="result"></div>
+
+    <script>
+        async function testTTS(text, language) {
+            try {
+                const response = await fetch('/api/tts/speak', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        text: text,
+                        language: language
+                    })
+                });
+                
+                const result = await response.json();
+                document.getElementById('result').innerHTML = `
+                    <h3>Result:</h3>
+                    <p><strong>Text:</strong> ${result.text}</p>
+                    <p><strong>Success:</strong> ${result.success}</p>
+                    <p><strong>Language:</strong> ${result.language}</p>
+                    <p><strong>Voice:</strong> ${result.voice}</p>
+                `;
+                
+                if (result.success && result.audio) {
+                    const audio = new Audio('data:audio/mp3;base64,' + result.audio);
+                    audio.play();
+                }
+            } catch (error) {
+                document.getElementById('result').innerHTML = `<p>Error: ${error.message}</p>`;
+            }
+        }
+        
+        function testEnglish() {
+            testTTS('Hello, how are you?', 'en');
+        }
+        
+        function testHindi() {
+            testTTS('नमस्ते, कैसे हैं आप?', 'hi');
+        }
+    </script>
+</body>
+</html>

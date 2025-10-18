@@ -8,6 +8,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
@@ -22,6 +23,9 @@ const Session = require('./models/Session');
 
 // Import services
 const ClaraAI = require('./services/claraAI');
+
+// Import Edge TTS service
+const { spawn, exec } = require('child_process');
 
 // Import Gemini AI
 const { queryGemini } = require('./geminiApi');
@@ -67,6 +71,9 @@ const io = socketIo(server, {
 });
 
 const PORT = process.env.PORT || 3000;
+
+// Static middleware - serve static files from public directory
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Helper to check DB connectivity
 const isDbConnected = () => mongoose.connection.readyState === 1;
@@ -249,7 +256,24 @@ const isCollegeQuery = (message) => {
   ];
   
   const lowerMessage = message.toLowerCase();
-  return collegeKeywords.some(keyword => lowerMessage.includes(keyword));
+  console.log('🔍 College query check for message:', message);
+  console.log('🔍 Lowercase message:', lowerMessage);
+  
+  // Check for greeting patterns first - if it's a greeting, don't treat as college query
+  const greetingPatterns = [
+    'namaste', 'namaskar', 'hello', 'hi', 'good morning', 'good afternoon', 'good evening',
+    'kaise ho', 'kaise hai', 'aap kaise', 'how are you', 'how do you do'
+  ];
+  
+  const isGreeting = greetingPatterns.some(pattern => lowerMessage.includes(pattern));
+  if (isGreeting) {
+    console.log('✅ Detected as greeting, not college query');
+    return false;
+  }
+  
+  const isCollege = collegeKeywords.some(keyword => lowerMessage.includes(keyword));
+  console.log('🔍 Is college query:', isCollege);
+  return isCollege;
 };
 
 // Helper function to detect timetable-related queries
@@ -347,8 +371,7 @@ app.get('/api/staff/status/:staffId', (req, res) => {
   });
 });
 
-// Static middleware - AFTER API routes
-app.use(express.static('public'));
+// Static middleware already configured above
 
 // Prevent favicon 404 noise
 app.get('/favicon.ico', (req, res) => res.status(204).end());
@@ -1434,6 +1457,7 @@ io.on('connection', (socket) => {
       }
       // Check if this is a college-related query
       else if (isCollegeQuery(message)) {
+        console.log('🏫 College AI detected for message:', message);
         try {
           aiResponse = await collegeAI.processQuery(message, sessionId);
         } catch (error) {
@@ -1442,7 +1466,9 @@ io.on('connection', (socket) => {
         }
       } else {
         // Use Clara AI for general queries
+        console.log('🤖 Clara AI processing query:', message);
         const claraResponse = await claraAI.processQuery(message, sessionId, user._id);
+        console.log('🤖 Clara AI response:', claraResponse);
         aiResponse = claraResponse.response;
         responseData = claraResponse;
       }
@@ -3279,6 +3305,11 @@ app.get('/api/staff/list', (req, res) => {
   }
 });
 
+// Main interface route
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/public/index.html');
+});
+
 // Staff interface routes
 app.get('/staff', (req, res) => {
   // Redirect to the main staff interface
@@ -3386,6 +3417,152 @@ app.post('/api/qr/generate', async (req, res) => {
 
 app.get('/api/qr/test', (req, res) => {
   res.sendFile(__dirname + '/public/test-qr-final.html');
+});
+
+// Edge TTS API endpoint
+app.post('/api/tts/speak', async (req, res) => {
+  try {
+    const { text, language, voice, rate = '+0%', pitch = '+0Hz' } = req.body;
+    
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Text is required and must be a non-empty string'
+      });
+    }
+
+    // Limit text length to prevent abuse
+    if (text.length > 5000) {
+      return res.status(400).json({
+        success: false,
+        error: 'Text too long. Maximum 5000 characters allowed.'
+      });
+    }
+
+        // Use temporary file approach for better Unicode handling
+        const fs = require('fs');
+        const path = require('path');
+        const os = require('os');
+        
+        // Create temporary file with UTF-8 encoding
+        const tempFile = path.join(os.tmpdir(), `tts_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.txt`);
+        
+        try {
+          // Write text to temporary file with UTF-8 encoding and BOM
+          fs.writeFileSync(tempFile, '\uFEFF' + text, 'utf8');
+          
+          // Call Python script with file path
+          const command = `python "${__dirname}/services/edgeTTS.py" "${tempFile}" "${language || ''}" "${voice || ''}"`;
+          
+          exec(command, { encoding: 'utf8' }, (error, stdout, stderr) => {
+            // Clean up temporary file
+            try {
+              if (fs.existsSync(tempFile)) {
+                fs.unlinkSync(tempFile);
+              }
+            } catch (cleanupError) {
+              console.error('Failed to clean up temp file:', cleanupError);
+            }
+            
+            if (error) {
+              console.error('Python process error:', error);
+              res.status(500).json({
+                success: false,
+                error: stderr || 'TTS generation failed',
+                fallback: 'browser_tts'
+              });
+              return;
+            }
+
+            if (stderr) {
+              console.error('Python stderr:', stderr);
+            }
+
+            try {
+              const result = JSON.parse(stdout);
+              if (result.success) {
+                res.json(result);
+              } else {
+                res.status(500).json(result);
+              }
+            } catch (parseError) {
+              console.error('Failed to parse TTS result:', parseError);
+              res.status(500).json({
+                success: false,
+                error: 'Failed to process TTS response',
+                fallback: 'browser_tts'
+              });
+            }
+          });
+        } catch (writeError) {
+          console.error('Failed to write temp file:', writeError);
+          res.status(500).json({
+            success: false,
+            error: 'Failed to process text',
+            fallback: 'browser_tts'
+          });
+        }
+
+  } catch (error) {
+    console.error('TTS endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      fallback: 'browser_tts'
+    });
+  }
+});
+
+// Get available voices endpoint
+app.get('/api/tts/voices', (req, res) => {
+  try {
+    const { language } = req.query;
+    
+    // Return available voices for the specified language with priority for Indian languages
+    const voiceList = {
+      // Priority 1: Indian Languages (highest accuracy priority)
+      'kn': ['kn-IN-SapnaNeural', 'kn-IN-GaganNeural'], // Kannada - optimized for clarity and fluency
+      'hi': ['hi-IN-SwaraNeural', 'hi-IN-MadhurNeural'], // Hindi - optimized for natural pronunciation
+      'te': ['te-IN-ShrutiNeural', 'te-IN-MohanNeural'], // Telugu - optimized for regional accents
+      'ta': ['ta-IN-PallaviNeural', 'ta-IN-ValluvarNeural'], // Tamil - optimized for clarity
+      'ml': ['ml-IN-SobhanaNeural', 'ml-IN-MidhunNeural'], // Malayalam - optimized for fluency
+      'mr': ['mr-IN-AarohiNeural', 'mr-IN-ManoharNeural'], // Marathi - optimized for natural tone
+      
+      // International Languages
+      'en': ['en-US-AriaNeural', 'en-GB-SoniaNeural', 'en-AU-NatashaNeural', 'en-CA-ClaraNeural'],
+      'es': ['es-ES-ElviraNeural', 'es-MX-DaliaNeural', 'es-AR-ElenaNeural'],
+      'fr': ['fr-FR-DeniseNeural', 'fr-CA-SylvieNeural'],
+      'de': ['de-DE-KatjaNeural'],
+      'it': ['it-IT-ElsaNeural'],
+      'pt': ['pt-BR-FranciscaNeural', 'pt-PT-RaquelNeural'],
+      'ja': ['ja-JP-NanamiNeural'],
+      'zh': ['zh-CN-XiaoxiaoNeural', 'zh-TW-HsiaoyuNeural'],
+      'ko': ['ko-KR-SunHiNeural'],
+      'ar': ['ar-SA-ZariyahNeural'],
+      'ru': ['ru-RU-SvetlanaNeural']
+    };
+
+    if (language && voiceList[language]) {
+      res.json({
+        success: true,
+        voices: voiceList[language],
+        language: language
+      });
+    } else {
+      res.json({
+        success: true,
+        voices: voiceList['en'], // Default to English
+        language: 'en',
+        allLanguages: Object.keys(voiceList)
+      });
+    }
+  } catch (error) {
+    console.error('Voices endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get voices'
+    });
+  }
 });
 
 // Start server
