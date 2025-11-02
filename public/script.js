@@ -409,73 +409,121 @@ class Clara {
     }
 
     setupEventListeners() {
-        // Speech input button
-        if (!this.speechInputButton) {
-            console.error('❌ speechInputButton not found!');
-            return;
-        }
-        
-        this.speechInputButton.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            console.log('🎤 Microphone button clicked');
-            
-            // iOS Fix: Unlock audio context on any user interaction (non-blocking)
-            this.unlockAudioContext();
-            
-            // Also unlock audio engine if available (non-blocking, in background)
-            if (window.getClaraAudioEngine) {
-                const engine = window.getClaraAudioEngine();
-                // Don't await - unlock in background without blocking user interaction
-                engine.unlock().catch(err => console.warn('Audio unlock failed:', err));
+        // Speech input button - with retry mechanism
+        const attachMicButtonListener = () => {
+            // Try to find button if not already found
+            if (!this.speechInputButton) {
+                this.speechInputButton = document.getElementById('speechInputButton');
             }
             
-            if (!this.isConversationStarted) {
-                // Show credentials popup first (original behavior)
-                console.log('📝 Conversation not started, starting conversation...');
-                this.startConversation();
+            if (!this.speechInputButton) {
+                console.error('❌ speechInputButton not found! Retrying in 100ms...');
+                setTimeout(attachMicButtonListener, 100);
                 return;
             }
             
-            if (this.isListening) {
-                // Stop current speech recognition (either Sarvam or browser)
-                console.log('🛑 Stopping speech recognition...');
-                if (this.currentMediaRecorder && this.currentMediaRecorder.state === 'recording') {
-                    this.stopSarvamSpeechRecognition();
-                } else if (this.speechRecognition) {
-                    try {
-                        this.speechRecognition.stop();
-                    } catch (err) {
-                        console.error('Error stopping speech recognition:', err);
-                        this.resetSpeechInput();
-                    }
-                }
-            } else {
-                // Try Sarvam AI first, fallback to browser speech recognition
-                console.log('🎤 Starting speech recognition...');
-                this.startSarvamSpeechRecognition().catch(err => {
-                    console.error('❌ Failed to start Sarvam speech recognition:', err);
-                    // Fallback to browser speech recognition
-                    if (this.speechRecognition) {
-                        console.log('🔄 Falling back to browser speech recognition...');
-                        this.startSpeechRecognition();
-                    } else {
-                        this.showError('Speech recognition is not available. Please check your microphone permissions.');
-                        this.resetSpeechInput();
-                    }
+            console.log('✅ Microphone button found, attaching event listener');
+            
+            // Remove any existing listeners first
+            const newButton = this.speechInputButton.cloneNode(true);
+            this.speechInputButton.parentNode.replaceChild(newButton, this.speechInputButton);
+            this.speechInputButton = newButton;
+            
+            // Store reference to this for use in event handler
+            const self = this;
+            
+            // Create the click handler function
+            const handleMicClick = function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('🎤 Microphone button clicked', {
+                    isConversationStarted: self.isConversationStarted,
+                    isListening: self.isListening,
+                    button: self.speechInputButton
                 });
+                
+                // iOS Fix: Unlock audio context on any user interaction (non-blocking)
+                self.unlockAudioContext();
+                
+                // Also unlock audio engine if available (non-blocking, in background)
+                if (window.getClaraAudioEngine) {
+                    const engine = window.getClaraAudioEngine();
+                    // Don't await - unlock in background without blocking user interaction
+                    engine.unlock().catch(err => console.warn('Audio unlock failed:', err));
+                }
+                
+                if (!self.isConversationStarted) {
+                    // Show credentials popup first (original behavior)
+                    console.log('📝 Conversation not started, starting conversation...');
+                    self.startConversation();
+                    return;
+                }
+                
+                if (self.isListening) {
+                    // Stop current speech recognition (either Sarvam or browser)
+                    console.log('🛑 Stopping speech recognition...');
+                    if (self.currentMediaRecorder && self.currentMediaRecorder.state === 'recording') {
+                        self.stopSarvamSpeechRecognition();
+                    } else if (self.speechRecognition) {
+                        try {
+                            self.speechRecognition.stop();
+                        } catch (err) {
+                            console.error('Error stopping speech recognition:', err);
+                            self.resetSpeechInput();
+                        }
+                    } else {
+                        self.resetSpeechInput();
+                    }
+                } else {
+                    // Try Sarvam AI first, fallback to browser speech recognition
+                    console.log('🎤 Starting speech recognition...');
+                    self.startSarvamSpeechRecognition().catch(err => {
+                        console.error('❌ Failed to start Sarvam speech recognition:', err);
+                        // Fallback to browser speech recognition
+                        if (self.speechRecognition) {
+                            console.log('🔄 Falling back to browser speech recognition...');
+                            self.startSpeechRecognition();
+                        } else {
+                            self.showError('Speech recognition is not available. Please check your microphone permissions.');
+                            self.resetSpeechInput();
+                        }
+                    });
+                }
+            };
+            
+            // Attach event listener with multiple event types for better compatibility
+            this.speechInputButton.addEventListener('click', handleMicClick, { passive: false });
+            this.speechInputButton.addEventListener('touchstart', handleMicClick, { passive: false });
+            
+            // Also store handler globally for debugging
+            window.claraMicHandler = handleMicClick;
+            
+            // Ensure button is not disabled
+            if (this.speechInputButton.disabled) {
+                console.warn('⚠️ Button was disabled, enabling it...');
+                this.speechInputButton.disabled = false;
             }
-        });
+            
+            // Test click programmatically to verify it works
+            console.log('✅ Microphone button event listener attached successfully');
+        };
+        
+        // Start attachment process
+        attachMicButtonListener();
 
         // Speech toggle
-        this.speechToggle.addEventListener('click', () => {
-            this.toggleSpeech();
-        });
+        if (this.speechToggle) {
+            this.speechToggle.addEventListener('click', () => {
+                this.toggleSpeech();
+            });
+        }
 
         // Text cleaning toggle
-        this.textCleaningToggle.addEventListener('click', () => {
-            this.toggleTextCleaning();
-        });
+        if (this.textCleaningToggle) {
+            this.textCleaningToggle.addEventListener('click', () => {
+                this.toggleTextCleaning();
+            });
+        }
 
         // Error modal
         if (this.closeError) {
@@ -4098,8 +4146,44 @@ class Clara {
 }
 
 // Initialize Clara when DOM is loaded
+let claraInstance = null;
 document.addEventListener('DOMContentLoaded', () => {
-    new Clara();
+    claraInstance = new Clara();
+    window.clara = claraInstance; // Expose globally for debugging
+    
+    // Double-check microphone button after a short delay
+    setTimeout(() => {
+        const micButton = document.getElementById('speechInputButton');
+        if (micButton) {
+            console.log('✅ Mic button verified in DOM:', micButton);
+            console.log('Button disabled?', micButton.disabled);
+            console.log('Button style:', window.getComputedStyle(micButton));
+            
+            // Ensure button is enabled
+            if (micButton.disabled) {
+                micButton.disabled = false;
+                console.log('⚠️ Mic button was disabled, now enabled');
+            }
+            
+            // Add a test click handler as fallback
+            if (!micButton.onclick) {
+                console.log('🔧 Adding fallback onclick handler');
+                micButton.onclick = function(e) {
+                    console.log('🔵 Fallback onclick triggered!', e);
+                    if (window.claraMicHandler) {
+                        window.claraMicHandler(e);
+                    } else if (claraInstance && claraInstance.speechInputButton) {
+                        console.log('🟢 Triggering click via claraInstance');
+                        // Manually trigger the handler
+                        const clickEvent = new MouseEvent('click', { bubbles: true, cancelable: true });
+                        claraInstance.speechInputButton.dispatchEvent(clickEvent);
+                    }
+                };
+            }
+        } else {
+            console.error('❌ Mic button still not found after initialization!');
+        }
+    }, 500);
 });
 
 // Video Call Functions
