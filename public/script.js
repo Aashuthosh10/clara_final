@@ -252,6 +252,17 @@ class Clara {
         this.speechIcon = document.getElementById('speechIcon');
         this.speechStatus = document.getElementById('speechStatus');
         
+        // Validate critical elements
+        if (!this.speechInputButton) {
+            console.error('❌ Critical: speechInputButton element not found in DOM!');
+        }
+        if (!this.micIcon) {
+            console.error('❌ Critical: micIcon element not found in DOM!');
+        }
+        if (!this.speechStatusDisplay) {
+            console.error('❌ Critical: speechStatusDisplay element not found in DOM!');
+        }
+        
         // Text cleaning controls
         this.textCleaningToggle = document.getElementById('textCleaningToggle');
         this.textCleaningIcon = document.getElementById('textCleaningIcon');
@@ -399,7 +410,16 @@ class Clara {
 
     setupEventListeners() {
         // Speech input button
-        this.speechInputButton.addEventListener('click', () => {
+        if (!this.speechInputButton) {
+            console.error('❌ speechInputButton not found!');
+            return;
+        }
+        
+        this.speechInputButton.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('🎤 Microphone button clicked');
+            
             // iOS Fix: Unlock audio context on any user interaction (non-blocking)
             this.unlockAudioContext();
             
@@ -412,20 +432,38 @@ class Clara {
             
             if (!this.isConversationStarted) {
                 // Show credentials popup first (original behavior)
+                console.log('📝 Conversation not started, starting conversation...');
                 this.startConversation();
                 return;
             }
             
             if (this.isListening) {
                 // Stop current speech recognition (either Sarvam or browser)
+                console.log('🛑 Stopping speech recognition...');
                 if (this.currentMediaRecorder && this.currentMediaRecorder.state === 'recording') {
                     this.stopSarvamSpeechRecognition();
                 } else if (this.speechRecognition) {
-                    this.speechRecognition.stop();
+                    try {
+                        this.speechRecognition.stop();
+                    } catch (err) {
+                        console.error('Error stopping speech recognition:', err);
+                        this.resetSpeechInput();
+                    }
                 }
             } else {
                 // Try Sarvam AI first, fallback to browser speech recognition
-                this.startSarvamSpeechRecognition();
+                console.log('🎤 Starting speech recognition...');
+                this.startSarvamSpeechRecognition().catch(err => {
+                    console.error('❌ Failed to start Sarvam speech recognition:', err);
+                    // Fallback to browser speech recognition
+                    if (this.speechRecognition) {
+                        console.log('🔄 Falling back to browser speech recognition...');
+                        this.startSpeechRecognition();
+                    } else {
+                        this.showError('Speech recognition is not available. Please check your microphone permissions.');
+                        this.resetSpeechInput();
+                    }
+                });
             }
         });
 
@@ -1218,6 +1256,7 @@ class Clara {
                 this.speechRecognition.stop();
             } catch (e) {
                 console.error('Failed to stop speech recognition:', e);
+                this.resetSpeechInput();
             }
             return;
         }
@@ -1227,8 +1266,9 @@ class Clara {
         
         try {
             this.speechRecognition.start();
+            console.log('✅ Browser speech recognition started');
         } catch (error) {
-            console.error('Failed to start speech recognition:', error);
+            console.error('❌ Failed to start speech recognition:', error);
             this.showError('Failed to start speech recognition. Please try again.');
             this.resetSpeechInput();
         }
@@ -1238,18 +1278,24 @@ class Clara {
         this.isListening = false;
         this.noSpeechRetries = 0; // Reset retry counter
         
-        // Reset UI elements
-        this.speechInputButton.classList.remove('recording');
-        this.micIcon.className = 'fas fa-microphone';
-        this.speechStatusDisplay.classList.remove('listening');
-        
-        // Update status text based on conversation state
-        if (this.isConversationStarted) {
-            this.speechStatusDisplay.textContent = 'Click the microphone to speak';
-            this.updateStatus('Ready to chat', 'ready');
-        } else {
-            this.speechStatusDisplay.textContent = 'Click to start conversation';
-            this.updateStatus('Ready', 'ready');
+        // Reset UI elements with null checks
+        if (this.speechInputButton) {
+            this.speechInputButton.classList.remove('recording');
+        }
+        if (this.micIcon) {
+            this.micIcon.className = 'fas fa-microphone';
+        }
+        if (this.speechStatusDisplay) {
+            this.speechStatusDisplay.classList.remove('listening');
+            
+            // Update status text based on conversation state
+            if (this.isConversationStarted) {
+                this.speechStatusDisplay.textContent = 'Click the microphone to speak';
+                this.updateStatus('Ready to chat', 'ready');
+            } else {
+                this.speechStatusDisplay.textContent = 'Click to start conversation';
+                this.updateStatus('Ready', 'ready');
+            }
         }
     }
 
@@ -1257,8 +1303,9 @@ class Clara {
     async startSarvamSpeechRecognition() {
         try {
             if (!this.isConversationStarted) {
-                this.showError('Please start a conversation first.');
-                return;
+                const error = new Error('Please start a conversation first.');
+                this.showError(error.message);
+                throw error;
             }
 
             if (this.isListening) {
@@ -1268,12 +1315,26 @@ class Clara {
 
             console.log('🎤 Starting Sarvam AI speech recognition...');
             
+            // Check if microphone is available
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                const error = new Error('Microphone access is not available in this browser.');
+                console.error('❌', error.message);
+                this.showError(error.message);
+                throw error;
+            }
+            
             // Update UI to show listening state
             this.isListening = true;
-            this.speechInputButton.classList.add('recording');
-            this.micIcon.className = 'fas fa-stop';
-            this.speechStatusDisplay.textContent = 'Listening with Sarvam AI...';
-            this.speechStatusDisplay.classList.add('listening');
+            if (this.speechInputButton) {
+                this.speechInputButton.classList.add('recording');
+            }
+            if (this.micIcon) {
+                this.micIcon.className = 'fas fa-stop';
+            }
+            if (this.speechStatusDisplay) {
+                this.speechStatusDisplay.textContent = 'Listening with Sarvam AI...';
+                this.speechStatusDisplay.classList.add('listening');
+            }
             this.updateStatus('Listening with Sarvam AI...', 'listening');
 
             // Get user media for audio recording
@@ -1282,7 +1343,9 @@ class Clara {
             const audioChunks = [];
 
             mediaRecorder.ondataavailable = (event) => {
-                audioChunks.push(event.data);
+                if (event.data && event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
             };
 
             mediaRecorder.onstop = async () => {
@@ -1290,10 +1353,23 @@ class Clara {
                 await this.processSarvamAudio(audioBlob);
                 stream.getTracks().forEach(track => track.stop());
             };
+            
+            mediaRecorder.onerror = (event) => {
+                console.error('❌ MediaRecorder error:', event.error);
+                this.showError('Recording error: ' + (event.error?.message || 'Unknown error'));
+                this.resetSpeechInput();
+            };
 
             // Start recording
-            mediaRecorder.start();
-            this.currentMediaRecorder = mediaRecorder;
+            try {
+                mediaRecorder.start();
+                this.currentMediaRecorder = mediaRecorder;
+                console.log('✅ Recording started successfully');
+            } catch (startError) {
+                console.error('❌ Failed to start MediaRecorder:', startError);
+                stream.getTracks().forEach(track => track.stop());
+                throw startError;
+            }
 
             // Auto-stop after 10 seconds
             setTimeout(() => {
@@ -1304,8 +1380,8 @@ class Clara {
 
         } catch (error) {
             console.error('❌ Sarvam speech recognition error:', error);
-            this.showError('Failed to start Sarvam AI speech recognition: ' + error.message);
             this.resetSpeechInput();
+            throw error; // Re-throw so caller can handle fallback
         }
     }
 
@@ -1314,10 +1390,16 @@ class Clara {
             this.currentMediaRecorder.stop();
         }
         this.isListening = false;
-        this.speechInputButton.classList.remove('recording');
-        this.micIcon.className = 'fas fa-microphone';
-        this.speechStatusDisplay.classList.remove('listening');
-        this.speechStatusDisplay.textContent = 'Processing with Sarvam AI...';
+        if (this.speechInputButton) {
+            this.speechInputButton.classList.remove('recording');
+        }
+        if (this.micIcon) {
+            this.micIcon.className = 'fas fa-microphone';
+        }
+        if (this.speechStatusDisplay) {
+            this.speechStatusDisplay.classList.remove('listening');
+            this.speechStatusDisplay.textContent = 'Processing with Sarvam AI...';
+        }
     }
 
     async processSarvamAudio(audioBlob) {
