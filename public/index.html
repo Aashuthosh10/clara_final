@@ -43,6 +43,13 @@
             </div>
         </header>
 
+        <!-- iOS Audio Unlock Button (hidden by default) -->
+        <div id="audioUnlockPrompt" style="display: none; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #ff6b6b; color: white; padding: 12px 24px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 10000; font-size: 14px;">
+            <button id="enableAudioBtn" style="background: white; color: #ff6b6b; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 14px;">
+                🔊 Tap to Enable Sound
+            </button>
+        </div>
+
         <!-- Chat Container -->
         <main class="chat-container">
             <div class="chat-messages" id="chatMessages" role="log" aria-live="polite">
@@ -188,5 +195,38 @@
     <script src="lib/ssml.js"></script>
     <script src="lib/audioEngine.js"></script>
     <script src="script.js"></script>
+    <script>
+        // iOS Audio Unlock Button Handler
+        (function() {
+            const prompt = document.getElementById('audioUnlockPrompt');
+            const btn = document.getElementById('enableAudioBtn');
+            
+            function maybeShowButton() {
+                if (!window.getClaraAudioEngine) return;
+                const engine = window.getClaraAudioEngine();
+                const ctx = engine.ac;
+                if (ctx && ctx.state !== 'running') {
+                    prompt.style.display = 'block';
+                } else {
+                    prompt.style.display = 'none';
+                }
+            }
+            
+            btn.addEventListener('click', async () => {
+                if (window.getClaraAudioEngine) {
+                    const engine = window.getClaraAudioEngine();
+                    await engine.unlock();
+                    maybeShowButton();
+                }
+            });
+            
+            // Show button on first TTS attempt if blocked
+            document.addEventListener('DOMContentLoaded', () => {
+                setTimeout(() => maybeShowButton(), 1000);
+                // Also check periodically
+                setInterval(maybeShowButton, 2000);
+            });
+        })();
+    </script>
 </body>
 </html>

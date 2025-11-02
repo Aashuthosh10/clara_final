@@ -29,6 +29,8 @@ class ClaraAudioEngine {
         this.queue = [];
         this.targetBufferSec = 0.35; // jitter buffer target (250-400ms range)
         this.crossfadeSec = 0.008; // ~8 ms crossfade
+        this.ready = false; // Track if audio is unlocked
+        this.suspendedQueue = []; // Queue for suspended state
 
         // Gentle mastering: tighter dynamics, slight presence boost
         Object.assign(this.comp, {
@@ -48,16 +50,73 @@ class ClaraAudioEngine {
         this.comp.connect(this.eqHi);
         this.eqHi.connect(this.gain);
         this.gain.connect(this.ac.destination);
+        
+        // iOS FIX: Auto-resume when iOS suspends on background/return
+        document.addEventListener('visibilitychange', async () => {
+            if (document.visibilityState === 'visible' && this.ac && this.ac.state !== 'running') {
+                try { 
+                    await this.ac.resume(); 
+                    console.log('✅ AudioContext resumed after visibility change');
+                    this.flushSuspendedQueue();
+                } catch (e) {
+                    console.warn('Failed to resume AudioContext:', e);
+                }
+            }
+        });
+
+        // iOS FIX: Handle state changes to flush queue when resumed
+        this.ac.onstatechange = async () => {
+            if (this.ac.state === 'suspended') {
+                console.log('⚠️ AudioContext suspended');
+                // wait for next user gesture; queued items will play after unlock
+            } else if (this.ac.state === 'running' && this.suspendedQueue.length) {
+                console.log('✅ AudioContext resumed, flushing queue');
+                this.flushSuspendedQueue();
+            }
+        };
     }
 
-    // Call once on user gesture (tap/click) for iOS Safari
+    // iOS FIX: Call once on user gesture (tap/click) for iOS Safari
     async unlock() {
         if (this.ac.state !== 'running') {
             try {
                 await this.ac.resume();
+                console.log('✅ AudioContext resumed');
             } catch (e) {
-                // Silently handle errors
+                console.warn('Failed to resume AudioContext:', e);
             }
+        }
+        
+        // iOS CRITICAL: Play a 1-frame silent buffer to "unlock" on iOS
+        try {
+            const buf = this.ac.createBuffer(1, 1, this.ac.sampleRate);
+            const src = this.ac.createBufferSource();
+            src.buffer = buf;
+            src.connect(this.ac.destination);
+            src.start(0);
+            console.log('✅ Silent buffer played to unlock iOS audio');
+        } catch (e) {
+            console.warn('Failed to play silent buffer:', e);
+        }
+        
+        if (this.ac.state === 'running') {
+            this.ready = true;
+            this.flushSuspendedQueue();
+        }
+    }
+    
+    // Flush any audio queued while suspended
+    flushSuspendedQueue() {
+        if (!this.suspendedQueue.length || !this.ready || this.ac.state !== 'running') {
+            return;
+        }
+        
+        const items = [...this.suspendedQueue];
+        this.suspendedQueue = [];
+        
+        console.log(`🔄 Flushing ${items.length} queued audio items`);
+        for (const item of items) {
+            this.enqueue(item.buffer);
         }
     }
 
@@ -103,6 +162,13 @@ class ClaraAudioEngine {
 
     /** Enqueue decoded AudioBuffer; will keep ~targetBufferSec ahead of now */
     enqueue(buffer) {
+        // If not unlocked or suspended, queue for later
+        if (!this.ready || this.ac.state !== 'running') {
+            console.log('⏸️ Audio not ready, queuing for later');
+            this.suspendedQueue.push({ buffer });
+            return;
+        }
+        
         this.queue.push({ buffer });
         this.drain();
     }

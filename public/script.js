@@ -60,15 +60,23 @@ function buildHumanSSML(text, lang = 'en-US') {
     return `\n<speak version="1.0" xml:lang="${lang}">\n  <lang xml:lang="${lang}">\n    <prosody rate="85%" pitch="+0st" volume="medium">\n      ${t}\n    </prosody>\n  </lang>\n</speak>`.trim();
 }
 
-// Create ONE shared AudioContext @ 48kHz per page (prevents stutter/robotic sound)
-if (!window.__claraAudioCtx) {
-    try {
-        window.__claraAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
-        console.log('✅ Created shared AudioContext @', window.__claraAudioCtx.sampleRate, 'Hz');
-    } catch (e) {
-        window.__claraAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        console.warn('⚠️ 48kHz not supported, using default:', window.__claraAudioCtx.sampleRate, 'Hz');
+// Use shared AudioContext from audioEngine.js (avoid duplicate contexts)
+function getClaraAudioContext() {
+    // Use the shared context from audioEngine.js
+    if (window.getAudioContext) {
+        return window.getAudioContext();
     }
+    // Fallback if audioEngine.js not loaded
+    if (!window.__claraAudioCtx) {
+        try {
+            window.__claraAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
+            console.log('✅ Created shared AudioContext @', window.__claraAudioCtx.sampleRate, 'Hz');
+        } catch (e) {
+            window.__claraAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            console.warn('⚠️ 48kHz not supported, using default:', window.__claraAudioCtx.sampleRate, 'Hz');
+        }
+    }
+    return window.__claraAudioCtx;
 }
 
 class Clara {
@@ -133,9 +141,10 @@ class Clara {
         // iOS Fix: Set up visibility change and page show handlers to resume audio
         if (this.isIOS) {
             this.setupIOSAudioResume();
-            // Note: Audio unlock happens naturally when first audio plays with user gesture
-            // No need to explicitly unlock upfront
         }
+        
+        // iOS FIX: Setup global audio unlock on first user gesture
+        this.setupGlobalAudioUnlock();
     }
     
     // iOS Fix: Handle visibility change and pageshow to resume audio when tab becomes active
@@ -166,6 +175,39 @@ class Clara {
                 });
             }
         });
+    }
+    
+    // iOS FIX: Setup global audio unlock on first user gesture
+    setupGlobalAudioUnlock() {
+        let unlocked = false;
+        const unlockHandler = async () => {
+            // Only unlock once
+            if (unlocked) return;
+            
+            // Don't block the current event - unlock in background
+            setTimeout(async () => {
+                // Unlock Web Audio API context
+                if (window.getClaraAudioEngine) {
+                    const engine = window.getClaraAudioEngine();
+                    await engine.unlock();
+                }
+                
+                // Also call our own unlock for any additional setup
+                this.unlockAudioContext();
+                
+                unlocked = true;
+                
+                // Remove listeners after first unlock
+                document.removeEventListener('pointerdown', unlockHandler, { passive: true });
+                document.removeEventListener('touchstart', unlockHandler, { passive: true });
+                document.removeEventListener('mousedown', unlockHandler, { passive: true });
+                document.removeEventListener('click', unlockHandler, { passive: true });
+            }, 0);
+        };
+        
+        // Attach unlock listeners to multiple events for better coverage
+        const events = ['pointerdown', 'touchstart', 'mousedown', 'click'];
+        events.forEach(ev => document.addEventListener(ev, unlockHandler, { passive: true }));
     }
 
     async loadSharedLexicon() {
@@ -358,8 +400,15 @@ class Clara {
     setupEventListeners() {
         // Speech input button
         this.speechInputButton.addEventListener('click', () => {
-            // iOS Fix: Unlock audio context on any user interaction
+            // iOS Fix: Unlock audio context on any user interaction (non-blocking)
             this.unlockAudioContext();
+            
+            // Also unlock audio engine if available (non-blocking, in background)
+            if (window.getClaraAudioEngine) {
+                const engine = window.getClaraAudioEngine();
+                // Don't await - unlock in background without blocking user interaction
+                engine.unlock().catch(err => console.warn('Audio unlock failed:', err));
+            }
             
             if (!this.isConversationStarted) {
                 // Show credentials popup first (original behavior)
@@ -1747,7 +1796,7 @@ class Clara {
 		this.speakWithHybridTTS(cleanedText);
 	}
 
-	// Hybrid TTS system: Standard English accent, Indian accent for Indian languages
+	// Hybrid TTS system: Standard English accent (Edge TTS), Native Indian languages (Sarvam TTS)
 	async speakWithHybridTTS(text) {
 		try {
 			// ENHANCED: Use language detection with confidence threshold
@@ -1764,9 +1813,14 @@ class Clara {
 				this.previousLanguage = selectedLang;
 			}
 			
-			// Force Sarvam TTS for all languages; Edge only as fallback below
-			console.log('🎯 Routing all TTS to Sarvam first. Language:', selectedLang);
-			await this.speakWithSarvamTTS(text, selectedLang);
+			// CRITICAL: Route English to Edge TTS for neutral accent, Indian languages to Sarvam for native pronunciation
+			if (selectedLang === 'en') {
+				console.log('🎯 Routing English to Edge TTS for neutral accent');
+				await this.speakWithEdgeTTS(text, selectedLang);
+			} else {
+				console.log('🎯 Routing Indian language to Sarvam TTS for native pronunciation:', selectedLang);
+				await this.speakWithSarvamTTS(text, selectedLang);
+			}
 		} catch (error) {
 			console.error('❌ Hybrid TTS error:', error);
 			// Fallback to Edge TTS in case Sarvam path fails
@@ -2197,7 +2251,7 @@ class Clara {
 
 	async playPartsBase64(parts, originalTextForLog = '') {
 		try {
-            const ctx = window.__claraAudioCtx;
+            const ctx = getClaraAudioContext();
             if (!ctx) {
                 throw new Error('AudioContext not initialized');
             }
@@ -2271,7 +2325,7 @@ class Clara {
 
             // Non-iOS: Use Web Audio API for better quality
             console.log('🖥️ Non-iOS detected - Using Web Audio API');
-            const ctx = window.__claraAudioCtx;
+            const ctx = getClaraAudioContext();
             if (!ctx) {
                 throw new Error('AudioContext not initialized');
             }
