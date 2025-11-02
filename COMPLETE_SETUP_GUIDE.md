@@ -18,6 +18,7 @@ The Clara AI Reception System provides:
 - Node.js (v16+)
 - MongoDB (v5+)
 - Google Gemini AI API key
+- **ffmpeg** (for iOS audio compatibility - converts OGG/Opus to MP3)
 
 ### **1. Installation**
 
@@ -30,6 +31,11 @@ npm install
 
 # Copy environment template
 copy env-template.txt .env
+
+# Install ffmpeg for audio conversion (iOS compatibility)
+# Windows: Download from https://ffmpeg.org/download.html or use: winget install ffmpeg
+# macOS: brew install ffmpeg
+# Linux: sudo apt-get install ffmpeg
 ```
 
 ### **2. Environment Configuration**

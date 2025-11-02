@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="format-detection" content="telephone=no">
     <title>Client Interface - Sai Vidya Institute of Technology</title>
     <script src="/socket.io/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
@@ -1369,7 +1372,7 @@
             for (let i = messages.length - 1; i >= 0; i--) {
                 const messageText = messages[i].textContent.toLowerCase();
                 // Look for staff names in recent messages
-                if (messageText.includes('anitha') || messageText.includes('prof. anitha')) {
+                if (messageText.includes('anitha') || messageText.includes('anita') || messageText.includes('prof. anitha')) {
                     return { name: 'Prof. Anitha C S', email: 'anithacs@gmail.com' };
                 }
                 if (messageText.includes('lakshmi') || messageText.includes('prof. lakshmi')) {
@@ -1410,18 +1413,22 @@
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
             
             // Check if a staff member was mentioned and enable call button
-            if (sender === 'bot') {
-                checkForStaffMention(text);
-            }
+            checkForStaffMention(text);
         }
 
         // Check if a staff member was mentioned in the message
         function checkForStaffMention(messageText) {
             const lowerText = messageText.toLowerCase();
-            const staffNames = ['anitha', 'prof. anitha', 'lakshmi', 'prof. lakshmi', 'dhivyasri', 'dr. g dhivyasri'];
+            const staffNames = ['anitha', 'anita', 'prof. anitha', 'lakshmi', 'prof. lakshmi', 'dhivyasri', 'dr. g dhivyasri'];
+            
+            console.log('🔍 Checking for staff mention in:', lowerText);
+            console.log('🔍 Staff names to check:', staffNames);
             
             const mentionedStaff = staffNames.find(name => lowerText.includes(name));
+            console.log('🔍 Mentioned staff found:', mentionedStaff);
+            
             if (mentionedStaff) {
+                console.log('✅ Staff mentioned! Enabling call button...');
                 enableCallButton();
             }
         }

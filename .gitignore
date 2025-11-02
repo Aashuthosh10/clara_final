@@ -64,3 +64,12 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Test audio files
+*.opus
+DEMO-TEST.*

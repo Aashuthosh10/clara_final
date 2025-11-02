@@ -23,6 +23,10 @@ const Session = require('./models/Session');
 
 // Import services
 const ClaraAI = require('./services/claraAI');
+const SarvamAI = require('./services/sarvamAI');
+const SarvamTTS = require('./services/sarvamTTS');
+const { splitByScript } = require('./services/langSplit');
+const { routeVoice } = require('./services/voices');
 
 // Import Edge TTS service
 const { spawn, exec } = require('child_process');
@@ -248,11 +252,19 @@ function generateDaySchedule(entries, day) {
 // Helper function to detect college-related queries
 const isCollegeQuery = (message) => {
   const collegeKeywords = [
-    'admission', 'apply', 'enroll', 'join', 'fee', 'cost', 'price', 'tuition',
-    'department', 'course', 'branch', 'cse', 'mechanical', 'civil', 'ece', 'ise',
-    'faculty', 'teacher', 'professor', 'placement', 'job', 'career', 'salary',
-    'event', 'fest', 'seminar', 'workshop', 'contact', 'phone', 'email',
-    'sai vidya', 'engineering', 'college', 'university', 'institute'
+    // Academic terms
+    'admission', 'apply', 'enroll', 'join', 'fee', 'cost', 'price', 'tuition', 'scholarship',
+    'department', 'course', 'branch', 'cse', 'mechanical', 'civil', 'ece', 'ise', 'it', 'cs',
+    'faculty', 'teacher', 'professor', 'lecturer', 'placement', 'job', 'career', 'salary',
+    'event', 'fest', 'seminar', 'workshop', 'contact', 'phone', 'email', 'address',
+    'sai vidya', 'engineering', 'college', 'university', 'institute', 'technology',
+    // Academic queries
+    'curriculum', 'syllabus', 'subjects', 'books', 'library', 'lab', 'laboratory',
+    'exam', 'examination', 'test', 'result', 'grade', 'marks', 'cgpa', 'gpa',
+    'hostel', 'accommodation', 'canteen', 'cafeteria', 'transport', 'bus',
+    // Information queries
+    'about', 'information', 'details', 'tell me', 'what is', 'how to', 'where is',
+    'when', 'timing', 'hours', 'location', 'directions', 'map'
   ];
   
   const lowerMessage = message.toLowerCase();
@@ -262,12 +274,19 @@ const isCollegeQuery = (message) => {
   // Check for greeting patterns first - if it's a greeting, don't treat as college query
   const greetingPatterns = [
     'namaste', 'namaskar', 'hello', 'hi', 'good morning', 'good afternoon', 'good evening',
-    'kaise ho', 'kaise hai', 'aap kaise', 'how are you', 'how do you do'
+    'kaise ho', 'kaise hai', 'aap kaise', 'how are you', 'how do you do', 'hey clara',
+    'clara hai', 'hai kya'
   ];
   
   const isGreeting = greetingPatterns.some(pattern => lowerMessage.includes(pattern));
   if (isGreeting) {
     console.log('✅ Detected as greeting, not college query');
+    return false;
+  }
+  
+  // Check for very short messages that are likely not college queries
+  if (lowerMessage.length < 3 || lowerMessage === 'yes' || lowerMessage === 'no') {
+    console.log('✅ Short message, not college query');
     return false;
   }
   
@@ -437,7 +456,7 @@ Always respond as Clara, maintaining your friendly receptionist personality. Be 
 /**
  * Generate chatbot response using Gemini AI only
  */
-async function generateResponse(message, conversationId) {
+async function generateResponse(message, conversationId, responseLanguage = 'en') {
   try {
     // Get conversation history when DB is available
     let messages = [];
@@ -448,11 +467,11 @@ async function generateResponse(message, conversationId) {
 
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-    // Use Gemini AI
+    // Use Gemini AI with language parameter
     if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_gemini_api_key_here') {
       try {
-        console.log('🤖 Using Gemini AI for response generation...');
-        const response = await queryGemini(message, messages);
+        console.log(`🤖 Using Gemini AI for response generation in ${responseLanguage}...`);
+        const response = await queryGemini(message, messages, responseLanguage);
         return response;
       } catch (geminiError) {
         console.error('❌ Gemini AI error:', geminiError.message);
@@ -1418,7 +1437,8 @@ io.on('connection', (socket) => {
   // Chat messages (allow chat without prior auth; create transient session if needed)
   socket.on('chat-message', async (data) => {
     try {
-      const { sessionId, message } = data;
+      const { sessionId, message, detectedLanguage } = data;
+      console.log('📨 Chat message received:', { message, detectedLanguage });
       let user = connectedUsers.get(socket.id);
       
       if (!user) {
@@ -1452,7 +1472,7 @@ io.on('connection', (socket) => {
           aiResponse = await timetableQueryHandler.processTimetableQuery(message);
         } catch (error) {
           console.error('Timetable query error, falling back to Gemini:', error);
-          aiResponse = await generateResponse(message, sessionId);
+          aiResponse = await generateResponse(message, sessionId, detectedLanguage);
         }
       }
       // Check if this is a college-related query
@@ -1462,7 +1482,7 @@ io.on('connection', (socket) => {
           aiResponse = await collegeAI.processQuery(message, sessionId);
         } catch (error) {
           console.error('College AI error, falling back to Gemini:', error);
-          aiResponse = await generateResponse(message, sessionId);
+          aiResponse = await generateResponse(message, sessionId, detectedLanguage);
         }
       } else {
         // Use Clara AI for general queries
@@ -1471,6 +1491,20 @@ io.on('connection', (socket) => {
         console.log('🤖 Clara AI response:', claraResponse);
         aiResponse = claraResponse.response;
         responseData = claraResponse;
+      }
+      
+      // ENHANCED: If the response was generated in English but the user asked in an Indian language,
+      // re-generate the response in the detected language
+      if (detectedLanguage && detectedLanguage !== 'en' && !isTimetableQuery(message) && !isCollegeQuery(message)) {
+        console.log(`🌐 Re-generating response in ${detectedLanguage}...`);
+        try {
+          const localizedResponse = await generateResponse(message, sessionId, detectedLanguage);
+          if (localizedResponse) {
+            aiResponse = localizedResponse;
+          }
+        } catch (error) {
+          console.error('Error generating localized response:', error);
+        }
       }
       
       // Save AI response
@@ -3422,7 +3456,7 @@ app.get('/api/qr/test', (req, res) => {
 // Edge TTS API endpoint
 app.post('/api/tts/speak', async (req, res) => {
   try {
-    const { text, language, voice, rate = '+0%', pitch = '+0Hz' } = req.body;
+    const { text, language, voice, rate = '+0%', pitch = '+0Hz', emotionalContext } = req.body;
     
     if (!text || typeof text !== 'string' || text.trim().length === 0) {
       return res.status(400).json({
@@ -3451,8 +3485,8 @@ app.post('/api/tts/speak', async (req, res) => {
           // Write text to temporary file with UTF-8 encoding and BOM
           fs.writeFileSync(tempFile, '\uFEFF' + text, 'utf8');
           
-          // Call Python script with file path
-          const command = `python "${__dirname}/services/edgeTTS.py" "${tempFile}" "${language || ''}" "${voice || ''}"`;
+          // Call Python script with file path and emotional context
+          const command = `python "${__dirname}/services/edgeTTS.py" "${tempFile}" "${language || ''}" "${voice || ''}" "${emotionalContext || 'casual'}"`;
           
           exec(command, { encoding: 'utf8' }, (error, stdout, stderr) => {
             // Clean up temporary file
@@ -3509,6 +3543,282 @@ app.post('/api/tts/speak', async (req, res) => {
       success: false,
       error: 'Internal server error',
       fallback: 'browser_tts'
+    });
+  }
+});
+
+// Initialize Sarvam AI services
+const sarvamAI = new SarvamAI();
+const sarvamTTS = new SarvamTTS();
+
+// Sarvam AI Speech-to-Text endpoint
+app.post('/api/speech/transcribe', async (req, res) => {
+  try {
+    const { audio, audioFormat, language } = req.body;
+    
+    if (!audio) {
+      return res.status(400).json({
+        success: false,
+        error: 'Audio data is required'
+      });
+    }
+
+    console.log('🎤 Received speech transcription request');
+    console.log(`📊 Audio size: ${audio.length} bytes`);
+    console.log(`🎵 Format: ${audioFormat || 'wav'}`);
+    console.log(`🌐 Language: ${language || 'auto-detect'}`);
+
+    // Convert base64 audio to buffer
+    let audioBuffer;
+    try {
+      audioBuffer = Buffer.from(audio, 'base64');
+    } catch (error) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid audio data format'
+      });
+    }
+
+    // Use Sarvam AI for transcription
+    const result = await sarvamAI.transcribeAudio(audioBuffer, audioFormat || 'wav', language);
+    
+    if (result.success) {
+      console.log('✅ Sarvam AI transcription successful:', result.text.substring(0, 50) + '...');
+    } else {
+      console.log('❌ Sarvam AI transcription failed:', result.error);
+    }
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('❌ Speech transcription error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error during transcription',
+      fallback: 'browser_speech'
+    });
+  }
+});
+
+// Sarvam AI test connection endpoint
+app.get('/api/speech/test', async (req, res) => {
+  try {
+    const result = await sarvamAI.testConnection();
+    res.json(result);
+  } catch (error) {
+    console.error('❌ Sarvam AI test error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to test Sarvam AI connection'
+    });
+  }
+});
+
+// Get Sarvam AI usage statistics
+app.get('/api/speech/usage', (req, res) => {
+  try {
+    const usage = sarvamAI.getUsageStats();
+    res.json({
+      success: true,
+      usage: usage,
+      isEnabled: sarvamAI.isAvailable()
+    });
+  } catch (error) {
+    console.error('❌ Usage stats error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get usage statistics'
+    });
+  }
+});
+
+// Sarvam TTS endpoint (uses native Indian voices for best quality & naturalness)
+app.post('/api/sarvam-tts/speak', async (req, res) => {
+  try {
+    const { text, language, pitch, pace, loudness, emotionalContext } = req.body || {};
+    
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Text is required and must be a non-empty string'
+      });
+    }
+
+    console.log('🔊 Received Sarvam TTS request');
+    console.log(`📝 Text: ${text.substring(0, 100)}...`);
+    
+    // Make language codes exact and consistent - detect if not provided
+    let lang = language;
+    if (!lang || typeof lang !== 'string' || !lang.trim()) {
+        // Simple language detection from text
+        if (/[\u0900-\u097F]/.test(text)) lang = 'hi-IN';
+        else if (/[\u0C80-\u0CFF]/.test(text)) lang = 'kn-IN';
+        else if (/[\u0C00-\u0C7F]/.test(text)) lang = 'te-IN';
+        else if (/[\u0B80-\u0BFF]/.test(text)) lang = 'ta-IN';
+        else if (/[\u0D00-\u0D7F]/.test(text)) lang = 'ml-IN';
+        else lang = 'en-US'; // Default to neutral English
+    }
+    
+    // Map language codes - English stays en-US (not en-IN), others map to -IN
+    const langMap = {
+        'en': 'en-US', 'en-US': 'en-US', 'en-GB': 'en-US', // English stays neutral
+        'hi': 'hi-IN', 'hi-IN': 'hi-IN',
+        'kn': 'kn-IN', 'kn-IN': 'kn-IN',
+        'te': 'te-IN', 'te-IN': 'te-IN',
+        'ta': 'ta-IN', 'ta-IN': 'ta-IN',
+        'ml': 'ml-IN', 'ml-IN': 'ml-IN',
+        'mr': 'mr-IN', 'mr-IN': 'mr-IN',
+        'gu': 'gu-IN', 'gu-IN': 'gu-IN',
+        'bn': 'bn-IN', 'bn-IN': 'bn-IN',
+        'pa': 'pa-IN', 'pa-IN': 'pa-IN',
+        'od': 'od-IN', 'od-IN': 'od-IN'
+    };
+    
+    // CRITICAL: Strict validation - NEVER default Indian languages to English
+    // If detected as Indic script but language not mapped, preserve the detected Indic language
+    let sarvamLang = langMap[lang];
+    if (!sarvamLang) {
+        // If text contains Indic script, preserve it (don't default to English)
+        if (/[\u0900-\u097F\u0980-\u09FF\u0B80-\u0BFF\u0C00-\u0C7F\u0C80-\u0CFF\u0D00-\u0D7F]/.test(text)) {
+            // Infer from script if language not explicitly provided
+            if (/[\u0900-\u097F]/.test(text)) sarvamLang = 'hi-IN';
+            else if (/[\u0C80-\u0CFF]/.test(text)) sarvamLang = 'kn-IN';
+            else if (/[\u0C00-\u0C7F]/.test(text)) sarvamLang = 'te-IN';
+            else if (/[\u0B80-\u0BFF]/.test(text)) sarvamLang = 'ta-IN';
+            else if (/[\u0D00-\u0D7F]/.test(text)) sarvamLang = 'ml-IN';
+            else sarvamLang = lang || 'hi-IN'; // Preserve detected language, default to Hindi for Indic
+        } else {
+            sarvamLang = 'en-US'; // Only default to English for non-Indic text
+        }
+    }
+    
+    console.log(`🌐 Language: ${lang} -> ${sarvamLang}`);
+
+    // Use provided emotional context or detect it automatically
+    const detectedContext = emotionalContext || sarvamTTS.detectEmotionalContext(text);
+    console.log(`🎭 Emotional context: ${detectedContext}`);
+    
+    // Handle mixed-language text: split and preserve English accent
+    const segments = splitByScript(text);
+    const { format, sample_rate, bitrate_kbps } = req.body;
+    
+    // If mixed-language (multiple segments), synthesize each chunk separately
+    if (segments.length > 1) {
+        console.log(`🔄 Detected mixed-language text with ${segments.length} segments`);
+        const audios = [];
+        
+        for (const seg of segments) {
+            const segLang = (seg.type === "latin")
+                ? "en-US"            // force neutral English for Latin chunks
+                : sarvamLang;        // use detected Indic language for Indic chunks
+            
+            const result = await sarvamTTS.generateSpeech(seg.text, segLang, {
+                pitch: pitch,
+                pace: pace,
+                loudness: loudness,
+                format: format || 'mp3',
+                sample_rate: sample_rate || 48000,
+                bitrate_kbps: bitrate_kbps || 192
+            }, detectedContext);
+            
+            if (result?.success && result?.audio) {
+                audios.push(result.audio);
+            }
+        }
+        
+        if (audios.length > 0) {
+            console.log(`✅ Mixed-language synthesis: ${audios.length} parts generated`);
+            return res.json({ 
+                success: true, 
+                parts: audios,
+                provider: 'sarvam',
+                language: sarvamLang
+            });
+        } else {
+            console.log('❌ Mixed-language synthesis failed');
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to synthesize mixed-language text',
+                fallback: 'edge_tts'
+            });
+        }
+    }
+    
+    // Single-language text: use standard flow with native voices
+    const result = await sarvamTTS.generateSpeech(text, sarvamLang, {
+      pitch: pitch,
+      pace: pace,
+      loudness: loudness,
+      format: format || 'mp3', // Default to MP3 for compatibility
+      sample_rate: sample_rate || 48000, // Default to 48kHz for quality
+      bitrate_kbps: bitrate_kbps || 192 // Default bitrate for MP3
+    }, detectedContext);
+    
+    if (result.success) {
+      console.log('✅ Sarvam TTS generation successful');
+      console.log(`🎤 Voice: ${result.voice} | Model: ${result.model}`);
+    } else {
+      console.log('❌ Sarvam TTS generation failed:', result.error);
+    }
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('❌ Sarvam TTS error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error during TTS generation',
+      fallback: 'edge_tts'
+    });
+  }
+});
+
+// Sarvam TTS test connection endpoint
+app.get('/api/sarvam-tts/test', async (req, res) => {
+  try {
+    const result = await sarvamTTS.testConnection();
+    res.json(result);
+  } catch (error) {
+    console.error('❌ Sarvam TTS test error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to test Sarvam TTS connection'
+    });
+  }
+});
+
+// Get Sarvam TTS supported languages
+app.get('/api/sarvam-tts/languages', (req, res) => {
+  try {
+    const languages = sarvamTTS.getSupportedLanguages();
+    res.json({
+      success: true,
+      languages: languages,
+      isEnabled: sarvamTTS.isAvailable()
+    });
+  } catch (error) {
+    console.error('❌ Languages error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get supported languages'
+    });
+  }
+});
+
+// Get Sarvam TTS usage statistics
+app.get('/api/sarvam-tts/usage', (req, res) => {
+  try {
+    const usage = sarvamTTS.getUsageStats();
+    res.json({
+      success: true,
+      usage: usage,
+      isEnabled: sarvamTTS.isAvailable()
+    });
+  } catch (error) {
+    console.error('❌ TTS usage stats error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get TTS usage statistics'
     });
   }
 });

@@ -13,6 +13,109 @@ class ClaraAI {
     this.currentCallRequest = null;
   }
 
+  // Routing: build powerful system prompt
+  buildRoutingPrompt() {
+    return `You are Clara, the receptionist AI for Sai Vidya Institute of Technology. Your job is to ROUTE every message to either DEMO mode (college-related assistant with tasking) or AI mode (general knowledge), and produce a structured control object plus a natural reply.
+
+ROUTING POLICY:
+- DEMO mode when the user asks ANYTHING about the college (“clg” also means college) including:
+  - Admissions, courses, branches, departments, subjects, fees, scholarships, placements, facilities, timings, address, events
+  - Staff/faculty/teachers/professors, timetable, schedules, availability, office hours
+  - Calling/connecting/meeting staff, appointments, contacting departments, administrative processes
+  - Campus life, canteen, library, transport, hostels, rules, forms, maps, directions
+- AI mode for everything else (math, coding, world/general knowledge, personal chit-chat not about college, etc.)
+
+INTENT TAXONOMY (use most specific):
+- greeting
+- staff_info_query
+- timetable_query
+- availability_query
+- schedule_call
+- schedule_appointment
+- admissions_info
+- fees_info
+- placements_info
+- facilities_info
+- general_college_info
+- general_knowledge
+- general_query
+
+STAFF DETECTION:
+- Fuzzy match names and honorifics (e.g., “Anitha mam”, “Prof. Lakshmi”, “Bhavya ma’am”, “Dr. Dhivyasri”).
+- If ambiguous, set staff.name = null and request clarification in response_text.
+- If user says “teacher of X” without a name, set staff.hint = "teacher_of_X" and request name.
+
+ACTIONS IN DEMO MODE:
+- If intent = schedule_call and staff is identified → set action = "initiate_call" and call_request = true.
+- If intent = availability_query or timetable_query → set action = "check_availability" and include the time if provided (normalized to 24h, include timezone if present).
+- If user explicitly asks to “call/connect/talk/speak” a teacher → treat as schedule_call even if phrased loosely.
+- If admissions/fees/placements/facilities/general_college_info → set action = "answer_from_college_knowledge".
+- Keep responses brief, warm, and professional. Ask a single clarifying question if needed.
+
+ACTIONS IN AI MODE:
+- action = "answer_general" with a concise, accurate answer.
+
+LANGUAGE:
+- Mirror the user’s language and script for response_text.
+
+OUTPUT FORMAT:
+- ALWAYS return a single JSON object as the first and only fenced block using \`\`\`json.
+- Do not include any other text before or after the JSON block.
+- Schema:
+{
+  "mode": "demo" | "ai",
+  "intent": string,
+  "staff": { "name": string | null, "department": string | null, "hint": string | null },
+  "time": { "text": string | null, "normalized": string | null },
+  "action": "initiate_call" | "check_availability" | "schedule_appointment" | "answer_from_college_knowledge" | "answer_general",
+  "call_request": boolean,
+  "response_text": string
+}`;
+  }
+
+  // Extract ```json ... ``` cleanly
+  extractJsonFromFence(text) {
+    if (!text) return null;
+    const fence = text.match(/```json\s*([\s\S]*?)```/i) || text.match(/```\s*json\s*([\s\S]*?)```/i);
+    if (fence && fence[1]) return fence[1].trim();
+    const trimmed = text.trim();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) return trimmed;
+    return null;
+  }
+
+  // Safe JSON parse
+  safeParseJson(text) {
+    try {
+      const body = this.extractJsonFromFence(text);
+      if (!body) return null;
+      return JSON.parse(body);
+    } catch (e) {
+      console.error('JSON parse failed:', e.message);
+      return null;
+    }
+  }
+
+  // Call LLM router
+  async routeMessage(message) {
+    const prompt = this.buildRoutingPrompt() + `
+
+User: ${message}`;
+    const raw = await queryGemini(prompt, []);
+    const control = this.safeParseJson(raw);
+    if (!control) {
+      return {
+        mode: 'ai',
+        intent: 'general_query',
+        staff: { name: null, department: null, hint: null },
+        time: { text: null, normalized: null },
+        action: 'answer_general',
+        call_request: false,
+        response_text: 'I’m here to help. Could you please clarify your question?'
+      };
+    }
+    return control;
+  }
+
   /**
    * Main method to process user queries with intelligent staff identification
    */
@@ -20,54 +123,62 @@ class ClaraAI {
     try {
       console.log('🤖 Clara AI processing query:', message);
 
-      // Check if we're in demo mode for a video call
+      // Handle ongoing demo-mode confirmation for calls
       if (this.isDemoMode && this.currentCallRequest) {
         return this.handleDemoModeResponse(message);
       }
 
-      // Analyze the message for staff mentions and intent
-      const analysis = await this.analyzeMessage(message);
-      
-      // Debug logging
-      console.log('🔍 Analysis:', {
-        staffNames: analysis.staffNames.map(s => s.name),
-        intent: analysis.intent,
-        isStaffRelated: analysis.isStaffRelated
-      });
-      
-      // Check if this is a video call request - bypass Gemini for calls
-      if (this.isVideoCallRequest(message, analysis)) {
-        console.log('🎥 Video call request detected, bypassing Gemini AI');
-        return this.handleVideoCallRequest(message, analysis);
-      }
-      
-      // Get relevant staff data if staff-related
-      const staffData = analysis.isStaffRelated ? await this.getRelevantStaffData(analysis) : {};
-      
-      // Generate intelligent response using Gemini AI
-      const response = await this.generateIntelligentResponse(message, analysis, staffData);
-      
-      // Check if user wants to schedule a call/appointment
-      if (analysis.intent === 'schedule_call' && analysis.identifiedStaff) {
-        const callOffer = await this.generateCallOffer(analysis.identifiedStaff, analysis);
-        return {
-          response: response,
-          callOffer: callOffer,
-          staffInfo: analysis.identifiedStaff
-        };
-      }
-      
-      // If staff name is mentioned but intent wasn't detected as call, still offer call proactively
-      if (analysis.staffNames.length > 0 && analysis.intent === 'staff_info_query') {
-        const callOffer = await this.generateCallOffer(analysis.staffNames[0], analysis);
-        return {
-          response: response,
-          callOffer: callOffer,
-          staffInfo: analysis.staffNames[0]
-        };
+      // Route first: decide demo vs ai and the action
+      const control = await this.routeMessage(message);
+      console.log('🧭 Router control:', control);
+
+      if (control.mode === 'demo') {
+        // Initiate call via existing demo call flow
+        if (control.action === 'initiate_call' && control.staff && control.staff.name) {
+          const analysis = {
+            staffNames: [{ name: control.staff.name, department: control.staff.department || 'CSE' }],
+            intent: 'schedule_call',
+            isStaffRelated: true
+          };
+          const callResp = await this.handleVideoCallRequest(message, analysis);
+          return {
+            response: control.response_text || callResp.response,
+            isVideoCallRequest: true,
+            staffInfo: analysis.staffNames[0],
+            requiresUserDecision: true,
+            isDemoMode: true
+          };
+        }
+
+        // Availability or timetable checks
+        if ((control.action === 'check_availability' || control.intent === 'availability_query' || control.intent === 'timetable_query')
+            && control.staff && control.staff.name) {
+          const analysis = await this.analyzeMessage(control.staff.name);
+          const staff = analysis.staffNames[0] || { name: control.staff.name, _id: undefined };
+          const avail = await this.getStaffAvailability(staff);
+          const timeText = control.time && control.time.text ? ` at ${control.time.text}` : '';
+          const prefix = control.response_text || `Let me check ${staff.name}’s availability${timeText}.`;
+          const follow = avail.canAcceptCall ? ` They are available. Would you like me to connect you now?` : ` Current status: ${avail.status}.`;
+          return { response: `${prefix}${follow}` };
+        }
+
+        // Other college info
+        if (control.action === 'answer_from_college_knowledge') {
+          return { response: control.response_text };
+        }
+
+        // Fallback to legacy path with analysis
+        const analysis = await this.analyzeMessage(message);
+        const staffData = analysis.isStaffRelated ? await this.getRelevantStaffData(analysis) : {};
+        const resp = await this.generateIntelligentResponse(message, analysis, staffData);
+        return { response: control.response_text || resp };
       }
 
-      return { response: response };
+      if (control.mode === 'ai') {
+        return { response: control.response_text };
+      }
+
+      return { response: 'I’m here to help. Could you please clarify your question?' };
     } catch (error) {
       console.error('❌ Clara AI error:', error);
       return {

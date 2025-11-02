@@ -8,21 +8,29 @@ import asyncio
 import sys
 import json
 import os
-import edge_tts
+import edge_tts  # pyright: ignore[reportMissingImports]
 import io
 import base64
 import re
+import json
+import subprocess
+import tempfile
+
+# Fix Windows console encoding issues
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 
 class EdgeTTSService:
     def __init__(self):
         self.voice_mapping = {
-            # English voices (prioritized for Clara)
-            'en': 'en-US-AriaNeural',
-            'en-US': 'en-US-AriaNeural',
-            'en-GB': 'en-GB-SoniaNeural',
-            'en-AU': 'en-AU-NatashaNeural',
-            'en-CA': 'en-CA-ClaraNeural',
-            'en-IN': 'en-IN-NeerjaNeural',
+            # English voices (enhanced premium voices for Clara)
+            'en': 'en-US-AvaNeural',  # Upgraded to premium voice
+            'en-US': 'en-US-AvaNeural',  # Premium, natural, clear
+            'en-GB': 'en-GB-SoniaNeural',  # British accent, professional
+            'en-AU': 'en-AU-NatashaNeural',  # Australian accent
+            'en-CA': 'en-CA-ClaraNeural',  # Perfect match for Clara name
+            'en-IN': 'en-IN-NeerjaNeural',  # Indian English, optimized
             
             # Spanish voices
             'es': 'es-ES-ElviraNeural',
@@ -184,32 +192,58 @@ class EdgeTTSService:
             'uk-UA': 'uk-UA-PolinaNeural',
         }
         
-        # Advanced speech parameters for optimal fluency and clarity (80-90% natural fluency target)
+        # Professional speech parameters for clear, consistent communication
         self.speech_parameters = {
-            # Indian Languages - optimized for maximum clarity and naturalness
-            'kn': {'rate': '+10%', 'pitch': '+5Hz', 'volume': '+10%'},  # Kannada - slightly faster, higher pitch
-            'hi': {'rate': '+5%', 'pitch': '+2Hz', 'volume': '+5%'},    # Hindi - moderate adjustments
-            'te': {'rate': '+8%', 'pitch': '+3Hz', 'volume': '+8%'},    # Telugu - optimized for regional clarity
-            'ta': {'rate': '+7%', 'pitch': '+4Hz', 'volume': '+7%'},    # Tamil - clear pronunciation
-            'ml': {'rate': '+6%', 'pitch': '+3Hz', 'volume': '+6%'},    # Malayalam - natural flow
-            'mr': {'rate': '+5%', 'pitch': '+2Hz', 'volume': '+5%'},    # Marathi - balanced tone
-            
-            # International Languages - standard parameters
-            'en': {'rate': '+0%', 'pitch': '+0Hz', 'volume': '+0%'},
-            'es': {'rate': '+5%', 'pitch': '+0Hz', 'volume': '+0%'},
-            'fr': {'rate': '+3%', 'pitch': '+1Hz', 'volume': '+0%'},
-            'de': {'rate': '+2%', 'pitch': '+0Hz', 'volume': '+0%'},
-            'it': {'rate': '+4%', 'pitch': '+1Hz', 'volume': '+0%'},
-            'pt': {'rate': '+3%', 'pitch': '+0Hz', 'volume': '+0%'},
-            'ja': {'rate': '+5%', 'pitch': '+2Hz', 'volume': '+0%'},
-            'zh': {'rate': '+4%', 'pitch': '+1Hz', 'volume': '+0%'},
-            'ko': {'rate': '+3%', 'pitch': '+1Hz', 'volume': '+0%'},
-            'ar': {'rate': '+2%', 'pitch': '+0Hz', 'volume': '+0%'},
-            'ru': {'rate': '+2%', 'pitch': '+0Hz', 'volume': '+0%'}
+            # English - slower, human-like pacing
+            'en':   {'rate': '-8%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'en-US':{'rate': '-8%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'en-GB':{'rate': '-7%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'en-IN':{'rate': '-6%', 'pitch': '-1Hz', 'volume': '+0%'},
+
+            # International Languages - slower, natural pacing
+            'es': {'rate': '-8%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'fr': {'rate': '-9%', 'pitch': '-2Hz', 'volume': '+0%'},
+            'de': {'rate': '-7%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'it': {'rate': '-8%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'pt': {'rate': '-8%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'ja': {'rate': '-6%', 'pitch': '+0Hz', 'volume': '+0%'},
+            'zh': {'rate': '-8%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'ko': {'rate': '-6%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'ar': {'rate': '-7%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'ru': {'rate': '-7%', 'pitch': '-1Hz', 'volume': '+0%'}
+        }
+
+        # Professional emotional tone parameters for clear, consistent communication
+        self.emotional_parameters = {
+            'greeting':    {'rate': '-6%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'casual':      {'rate': '-6%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'professional':{'rate': '-4%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'helpful':     {'rate': '-6%', 'pitch': '-1Hz', 'volume': '+0%'},
+            'excited':     {'rate': '-3%', 'pitch': '+0Hz', 'volume': '+0%'},
+            'calm':        {'rate': '-8%', 'pitch': '-1Hz', 'volume': '+0%'}
         }
         
-        # Pronunciation enhancement patterns for better clarity and naturalness
+        # Enhanced pronunciation patterns for Indian names and technical terms
+        # Load shared server lexicon (for simple English acronyms and local spell-outs)
+        self.server_lexicon = self._load_server_lexicon()
+
         self.pronunciation_enhancements = {
+            # Staff names and technical terms enhancement
+            'staff_names': {
+                'patterns': [
+                    (r'\bProf\.?\s+Anitha\s+C\.?\s*S\.?\b', 'Professor Anitha C S'),
+                    (r'\bDr\.?\s+G\s+Dhivyasri\b', 'Doctor G Dhivyasri'),
+                    (r'\bProf\.?\s+Lakshmi\s+Durga\s*N\.?\b', 'Professor Lakshmi Durga N'),
+                    (r'\bProf\.?\s+Bhavya\s+T\.?\s*N\.?\b', 'Professor Bhavya T N'),
+                    (r'\bProf\.?\s+Nisha\s+S\.?\s*K\.?\b', 'Professor Nisha S K'),
+                    (r'\bComputer\s+Science\b', 'Computer Science Engineering'),
+                    (r'\bData\s+Structures\b', 'Data Structures and Algorithms'),
+                    (r'\bSoftware\s+Engineering\b', 'Software Engineering and Project Management'),
+                ]
+            },
+            'en': {
+                'patterns': []
+            },
             'kn': {
                 'patterns': [
                     (r'\b(\w+)aa\b', r'\1ā'),  # Long vowel enhancement for Kannada
@@ -322,6 +356,16 @@ class EdgeTTSService:
         else:
             return 'en'  # Default to English
 
+    def _load_server_lexicon(self):
+        try:
+            base_dir = os.path.dirname(__file__)
+            json_path = os.path.normpath(os.path.join(base_dir, '..', 'public', 'config', 'pronunciations.json'))
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('serverLexicon', {})
+        except Exception:
+            return {}
+
     def get_voice(self, language=None, text=None):
         """Get the best voice for the given language or detected from text"""
         if language:
@@ -332,25 +376,60 @@ class EdgeTTSService:
         else:
             return self.voice_mapping['en']
 
-    async def text_to_speech(self, text, voice=None, language=None, rate='+0%', pitch='+0Hz'):
+    async def text_to_speech(self, text, voice=None, language=None, rate='+0%', pitch='+0Hz', emotional_context='casual'):
         """Convert text to speech using Edge TTS with advanced fluency optimization"""
         try:
             # Clean text for better TTS
             cleaned_text = self.clean_text(text)
+
+            # Apply server lexicon spell-outs (language-aware)
+            try:
+                lang = language or self.detect_language(cleaned_text)
+                merged = {}
+                if 'default' in self.server_lexicon:
+                    merged.update(self.server_lexicon['default'])
+                if lang in self.server_lexicon:
+                    merged.update(self.server_lexicon[lang])
+                for token, replacement in merged.items():
+                    cleaned_text = re.sub(rf"\b{re.escape(token)}\b", replacement, cleaned_text)
+            except Exception:
+                pass
             
             # Get voice
             if not voice:
                 voice = self.get_voice(language, cleaned_text)
             
             # Apply pronunciation enhancements for better clarity
+            # First apply staff names enhancement (language independent)
+            if 'staff_names' in self.pronunciation_enhancements:
+                enhanced_text = cleaned_text
+                for pattern, replacement in self.pronunciation_enhancements['staff_names']['patterns']:
+                    enhanced_text = re.sub(pattern, replacement, enhanced_text, flags=re.IGNORECASE)
+                cleaned_text = enhanced_text
+            
+            # Then apply language-specific enhancements
             if language and language in self.pronunciation_enhancements:
                 enhanced_text = cleaned_text
                 for pattern, replacement in self.pronunciation_enhancements[language]['patterns']:
                     enhanced_text = re.sub(pattern, replacement, enhanced_text, flags=re.IGNORECASE)
                 cleaned_text = enhanced_text
             
-            # Get optimized speech parameters for the language
-            speech_params = self.speech_parameters.get(language, {'rate': rate, 'pitch': pitch, 'volume': '+0%'})
+            # Get base speech parameters for the language
+            base_params = self.speech_parameters.get(language, {'rate': rate, 'pitch': pitch, 'volume': '+0%'})
+            emotional_params = self.emotional_parameters.get(emotional_context, {'rate': '+0%', 'pitch': '+0Hz', 'volume': '+0%'})
+            
+            # Combine base and emotional parameters for human-like speech
+            combined_params = {
+                'rate': base_params['rate'],
+                'pitch': base_params['pitch'],
+                'volume': base_params['volume']
+            }
+            
+            # Apply emotional adjustments
+            if emotional_context != 'casual':
+                combined_params['rate'] = emotional_params['rate']
+                combined_params['pitch'] = emotional_params['pitch']
+                combined_params['volume'] = emotional_params['volume']
             
             # Generate speech with plain text to avoid SSML version issues
             # Use plain text instead of SSML to prevent unwanted speech messages
@@ -361,6 +440,10 @@ class EdgeTTSService:
             async for chunk in communicate.stream():
                 if chunk["type"] == "audio":
                     audio_data += chunk["data"]
+            
+            # Convert OGG/Opus to MP3 for iOS compatibility
+            # iOS Safari doesn't support OGG/Opus, so we convert to MP3
+            audio_data = self._convert_to_mp3(audio_data)
             
             # Convert to base64 for JSON transmission
             audio_base64 = base64.b64encode(audio_data).decode('utf-8')
@@ -379,6 +462,93 @@ class EdgeTTSService:
                 'error': str(e),
                 'text': text
             }
+
+    def _convert_to_mp3(self, audio_data):
+        """Convert OGG/Opus audio to MP3 for iOS compatibility"""
+        try:
+            # Check if ffmpeg is available
+            result = subprocess.run(['ffmpeg', '-version'], 
+                                  capture_output=True, 
+                                  timeout=2)
+            if result.returncode != 0:
+                # ffmpeg not available, return original audio
+                sys.stderr.write('⚠️ ffmpeg not available, skipping conversion (iOS may not support OGG)\n')
+                return audio_data
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            # ffmpeg not installed or not in PATH, return original audio
+            sys.stderr.write('⚠️ ffmpeg not found, skipping conversion (iOS may not support OGG)\n')
+            return audio_data
+        
+        try:
+            # Create temporary files for input (OGG) and output (MP3)
+            with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as input_file:
+                input_file.write(audio_data)
+                input_path = input_file.name
+            
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as output_file:
+                output_path = output_file.name
+            
+            # Convert OGG to MP3 using ffmpeg
+            # -i: input file
+            # -codec:a libmp3lame: use MP3 codec
+            # -b:a 128k: bitrate 128kbps (good quality, reasonable file size)
+            # -ar 24000: sample rate 24kHz (sufficient for speech)
+            # -ac 1: mono channel (speech doesn't need stereo)
+            # -y: overwrite output file
+            cmd = [
+                'ffmpeg',
+                '-i', input_path,
+                '-codec:a', 'libmp3lame',
+                '-b:a', '128k',
+                '-ar', '24000',
+                '-ac', '1',
+                '-y',  # Overwrite output file
+                output_path
+            ]
+            
+            result = subprocess.run(cmd, 
+                                  capture_output=True, 
+                                  timeout=10,
+                                  check=True)
+            
+            # Read converted MP3 file
+            with open(output_path, 'rb') as f:
+                mp3_data = f.read()
+            
+            # Clean up temporary files
+            try:
+                os.unlink(input_path)
+                os.unlink(output_path)
+            except:
+                pass
+            
+            sys.stderr.write(f'✅ Converted OGG to MP3: {len(audio_data)} bytes → {len(mp3_data)} bytes\n')
+            return mp3_data
+            
+        except subprocess.CalledProcessError as e:
+            sys.stderr.write(f'⚠️ ffmpeg conversion failed: {e.stderr.decode() if e.stderr else str(e)}\n')
+            # Clean up on error
+            try:
+                if 'input_path' in locals():
+                    os.unlink(input_path)
+                if 'output_path' in locals():
+                    os.unlink(output_path)
+            except:
+                pass
+            # Return original audio if conversion fails
+            return audio_data
+        except Exception as e:
+            sys.stderr.write(f'⚠️ Audio conversion error: {str(e)}\n')
+            # Clean up on error
+            try:
+                if 'input_path' in locals():
+                    os.unlink(input_path)
+                if 'output_path' in locals():
+                    os.unlink(output_path)
+            except:
+                pass
+            # Return original audio if conversion fails
+            return audio_data
 
     def clean_text(self, text):
         """Clean text for better TTS output"""
@@ -411,6 +581,7 @@ async def main():
     input_arg = sys.argv[1]
     language = sys.argv[2] if len(sys.argv) > 2 else None
     voice = sys.argv[3] if len(sys.argv) > 3 else None
+    emotional_context = sys.argv[4] if len(sys.argv) > 4 else 'casual'
     
     # Check if input is a file path (contains path separators or exists as file)
     if os.path.exists(input_arg) and os.path.isfile(input_arg):
@@ -429,7 +600,7 @@ async def main():
         text = input_arg
 
     tts_service = EdgeTTSService()
-    result = await tts_service.text_to_speech(text, voice, language)
+    result = await tts_service.text_to_speech(text, voice, language, emotional_context=emotional_context)
     
     print(json.dumps(result))
 
